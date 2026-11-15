@@ -615,3 +615,14 @@ def test_phone_number_with_invisible_marks_is_accepted(client):
     login(client)
     for raw in ["‎050-123 4567‎", "‪+972 50 123 4567‬", "00972501234567"]:
         assert client.post("/api/tg/send-code", json={"phone": raw}).json()["phone"] == "+972501234567"
+
+
+def test_send_code_twice_goes_to_code_step(client):
+    login(client)
+    tg = client.app.state.tg
+
+    async def send_code(phone):
+        return "already_sent"
+    tg.send_code = send_code
+    r = client.post("/api/tg/send-code", json={"phone": "050-123 4567"}).json()
+    assert r["ok"] and r["already_sent"] is True

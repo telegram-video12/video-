@@ -66,6 +66,8 @@ def telegram_error_message(e: Exception) -> str:
         "ApiIdInvalidError": "ה-API ID או ה-API Hash שגויים. בדוק אותם שוב ב-my.telegram.org",
         "FloodWaitError": f"טלגרם ביקשה להמתין {getattr(e, 'seconds', '')} שניות לפני ניסיון נוסף",
         "PhoneNumberBannedError": "המספר חסום בטלגרם",
+        "SendCodeUnavailableError": "טלגרם כבר שלח קוד ולא מאפשר לשלוח שוב כרגע. הזן את הקוד האחרון שקיבלת, "
+                                    "או סגור והפעל מחדש את האתר ונסה שוב בעוד כמה דקות",
     }.get(name, str(e) or name)
 
 
@@ -545,10 +547,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if not re.fullmatch(r"\+?\d{8,15}", phone):
             raise ApiError(400, "מספר טלפון לא תקין")
         try:
-            await tg.send_code(phone)
+            how = await tg.send_code(phone)
         except Exception as e:  # noqa: BLE001
             raise ApiError(400, telegram_error_message(e)) from e
-        return ok({"ok": True, "phone": phone})
+        return ok({"ok": True, "phone": phone, "already_sent": how == "already_sent"})
 
     async def tg_sign_in(request: Request):
         data = await body(request)

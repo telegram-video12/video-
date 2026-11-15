@@ -90,13 +90,23 @@ class TelegramService:
         self.authorized = False
 
     # ------------------------------------------------------------ web login
-    async def send_code(self, phone: str) -> None:
+    async def send_code(self, phone: str) -> str:
         if not self.client:
             raise RuntimeError("צריך קודם להזין API ID ו-API Hash")
         if not self.client.is_connected():
             await self.client.connect()
-        sent = await self.client.send_code_request(phone)
+        try:
+            sent = await self.client.send_code_request(phone)
+        except Exception as e:  # noqa: BLE001
+            # A code was already sent in this run and Telegram has no other way to resend it:
+            # the code you already got is still the one to type, so go on to the code step.
+            cached = getattr(self.client, "_phone_code_hash", {}).get(phone.lstrip("+"))
+            if type(e).__name__ in ("SendCodeUnavailableError", "PhoneCodeExpiredError") and cached:
+                self._phone, self._phone_code_hash = phone, cached
+                return "already_sent"
+            raise
         self._phone, self._phone_code_hash = phone, sent.phone_code_hash
+        return "sent"
 
     async def sign_in_code(self, code: str) -> bool:
         """Returns True when logged in, False when a 2FA password is still needed."""

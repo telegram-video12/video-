@@ -879,8 +879,10 @@ async function pageSettings() {
   };
   $('#tg-send')?.addEventListener('click', () => run(async () => {
     $('#tg-send').disabled = true;
-    try { await api('/api/tg/send-code', {method: 'POST', body: {phone: $('#tg-phone').value}}); } finally { $('#tg-send').disabled = false; }
+    let r;
+    try { r = await api('/api/tg/send-code', {method: 'POST', body: {phone: $('#tg-phone').value}}); } finally { $('#tg-send').disabled = false; }
     show('code'); $('#tg-code').focus();
+    if (r.already_sent) tgErr.textContent = 'הקוד כבר נשלח קודם. הזן את הקוד האחרון שקיבלת בטלגרם.';
   }, tgErr));
   $('#tg-code-go')?.addEventListener('click', () => run(async () => {
     afterLogin(await api('/api/tg/sign-in', {method: 'POST', body: {code: $('#tg-code').value}}));
