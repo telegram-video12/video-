@@ -285,3 +285,63 @@ def test_peeking_does_not_move_resume_point(client):
     client.post(f"/api/progress/{ep2['id']}", json={"position": 3, "duration": 1500})  # opened by mistake
     resume = client.get(f"/api/titles/{fauda['id']}").json()["resume"]
     assert resume["media"]["id"] == ep1["id"] and resume["position"] == 600
+
+
+def test_duplicates_show_once_best_quality_first(client):
+    login(client)
+    tg = client.app.state.tg
+
+    def mv(mid, caption, name="", height=None, size=len(FILE), chat=-100):
+        return VideoMessage(chat, mid, caption, name, size, "video/mp4", 6000, None, height, 1000 + mid)
+    tg.messages = [
+        (1, mv(1, "הסרט: אינספשן (2010) 720p")),
+        (2, mv(2, "אינספשן 2010 1080p", height=1080)),
+        (3, mv(3, "", "Inception.2010.480p.mkv")),       # English name: separate until TMDB/merge
+        (4, mv(4, "אינספשן (2010) מתורגם", height=720)),
+        (5, mv(5, "שטיסל עונה 1 פרק 1 720p")),
+        (6, mv(6, "שטיסל עונה 1 פרק 1 1080p")),
+        (7, mv(7, "שטיסל עונה 1 פרק 2")),
+    ]
+    scan(client)
+    titles = {t["name"]: t for t in client.get("/api/library").json()["titles"]}
+    assert titles["אינספשן"]["media_count"] == 1          # 3 uploads -> one movie
+    assert titles["שטיסל"]["media_count"] == 2            # 3 uploads -> two episodes
+    movie = client.get(f"/api/titles/{titles['אינספשן']['id']}").json()
+    assert len(movie["media"]) == 1
+    best = movie["media"][0]
+    assert best["quality"] == 1080 and best["versions"] == 3
+    # watching a lower version counts for the movie, and the best version resumes from there
+    detail = client.get(f"/api/media/{best['id']}").json()
+    assert [v["quality"] for v in detail["versions"]] == [1080, 720, 720]
+    low = detail["versions"][-1]["id"]
+    client.post(f"/api/progress/{low}", json={"position": 900, "duration": 6000})
+    assert client.get(f"/api/media/{best['id']}").json()["media"]["position"] == 900
+    assert client.get(f"/api/titles/{titles['אינספשן']['id']}").json()["media"][0]["position"] == 900
+    # edit mode still lists every file
+    assert len(client.get(f"/api/titles/{titles['אינספשן']['id']}?hidden=true").json()["media"]) == 3
+    # series: next episode skips the duplicate version
+    eps = client.get(f"/api/titles/{titles['שטיסל']['id']}").json()["media"]
+    assert eps[0]["quality"] == 1080
+    nav = client.get(f"/api/media/{eps[0]['id']}").json()
+    assert nav["next"]["episode"] == 2
+    # merging the English-named entry makes it a 4th version of the same movie
+    client.post(f"/api/titles/{titles['Inception']['id']}/merge", json={"into": titles["אינספשן"]["id"]})
+    assert client.get(f"/api/titles/{titles['אינספשן']['id']}").json()["media"][0]["versions"] == 4
+
+
+def test_tmdb_merges_same_movie_with_different_names(client, monkeypatch):
+    import asyncio
+    from app.tmdb import TMDB
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "אינספשן (2010)")), (2, vm(2, "", "Inception.2010.1080p.mkv"))]
+    scan(client)
+    db = client.app.state.db
+    assert len(client.get("/api/library").json()["titles"]) == 2
+
+    async def lookup(self, kind, name, year=None, tmdb_id=None):
+        return {"tmdb_id": 27205, "tmdb_name": "התחלה", "overview": "...", "poster": None, "backdrop": None, "year": 2010}
+    monkeypatch.setattr(TMDB, "lookup", lookup)
+    asyncio.run(TMDB("k").enrich_pending(db))
+    titles = client.get("/api/library").json()["titles"]
+    assert len(titles) == 1 and titles[0]["name"] == "התחלה" and titles[0]["media_count"] == 1

@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS progress (
 );
 """
 
+# Several uploads of the same episode/movie (other groups, other qualities) count as one.
+EP_KEY = ("(CASE WHEN t.kind = 'movie' THEN 'movie' WHEN m.episode IS NULL THEN 'id' || m.id "
+          "ELSE m.season || ':' || m.episode END)")
+
 COMPLETE_RATIO = 0.92  # watched this much -> episode counts as finished
 MIN_STARTED = 10  # seconds; peeking at an episode for less than this does not count as watching it
 
@@ -184,13 +188,13 @@ class Database:
 
     def list_titles(self) -> list[dict]:
         return self.q(
-            """
+            f"""
             SELECT t.id, t.kind, t.name, t.year, t.poster, t.overview,
-                   COUNT(m.id) AS media_count,
+                   COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,
                    MAX(m.added_at) AS last_added,
                    MIN(m.id) AS first_media_id,
-                   SUM(CASE WHEN p.completed = 1 THEN 1 ELSE 0 END) AS watched_count,
+                   COUNT(DISTINCT CASE WHEN p.completed = 1 THEN {EP_KEY} END) AS watched_count,
                    MAX(p.updated_at) AS last_watched
             FROM titles t
             JOIN media m ON m.title_id = t.id AND m.hidden = 0
@@ -233,15 +237,72 @@ class Database:
         sets = ", ".join(f"{k} = ?" for k in fields)
         self.x(f"UPDATE media SET {sets} WHERE id = ?", (*fields.values(), media_id))
 
-    def title_media(self, title_id: int, include_hidden: bool = False) -> list[dict]:
+    def _all_media(self, title_id: int, include_hidden: bool) -> tuple[str, list[dict]]:
         hidden = "" if include_hidden else "AND m.hidden = 0"
-        return self.q(
-            f"""SELECT m.*, p.position, p.duration AS watched_duration, p.completed, p.updated_at AS watched_at
-                FROM media m LEFT JOIN progress p ON p.media_id = m.id
+        rows = self.q(
+            f"""SELECT m.*, t.kind, p.position, p.duration AS watched_duration, p.completed,
+                       p.updated_at AS watched_at
+                FROM media m JOIN titles t ON t.id = m.title_id
+                LEFT JOIN progress p ON p.media_id = m.id
                 WHERE m.title_id = ? {hidden}
                 ORDER BY COALESCE(m.season, 0), COALESCE(m.episode, 0), m.chat_id, m.msg_id""",
             (title_id,),
         )
+        for r in rows:
+            r["quality"] = quality_of(r)
+        return (rows[0]["kind"] if rows else "series"), rows
+
+    @staticmethod
+    def episode_key(m: dict, kind: str) -> tuple:
+        if kind == "movie":
+            return ("movie",)
+        if m["episode"] is None:
+            return ("id", m["id"])
+        return (m["season"], m["episode"])
+
+    def _grouped(self, title_id: int) -> list[list[dict]]:
+        """Versions of the same episode grouped together, best quality first."""
+        kind, rows = self._all_media(title_id, False)
+        groups: dict[tuple, list[dict]] = {}
+        for r in rows:
+            groups.setdefault(self.episode_key(r, kind), []).append(r)
+        out = []
+        for versions in groups.values():
+            versions.sort(key=lambda r: (r["quality"], r["size"] or 0, -r["msg_id"]), reverse=True)
+            out.append(versions)
+        return out
+
+    def title_media(self, title_id: int, include_hidden: bool = False) -> list[dict]:
+        """One row per episode (the best quality upload) unless include_hidden, which lists every file.
+
+        Watch progress is shared between versions: the most recently watched one wins.
+        """
+        if include_hidden:
+            rows = self._all_media(title_id, True)[1]
+            for r in rows:
+                r["versions"] = 1
+            return rows
+        out = []
+        for versions in self._grouped(title_id):
+            best = dict(versions[0])
+            watched = [v for v in versions if v.get("watched_at")]
+            if watched:
+                last = max(watched, key=lambda v: v["watched_at"])
+                for k in ("position", "watched_duration", "completed", "watched_at"):
+                    best[k] = last[k]
+                best["completed"] = max(v["completed"] or 0 for v in watched)
+            best["versions"] = len(versions)
+            out.append(best)
+        return out
+
+    def versions(self, media_id: int) -> list[dict]:
+        m = self.get_media(media_id)
+        if not m:
+            return []
+        for group in self._grouped(m["title_id"]):
+            if any(v["id"] == media_id for v in group):
+                return group
+        return [dict(m, quality=quality_of(m))]
 
     # --------------------------------------------------------------- progress
     def save_progress(self, media_id: int, position: float, duration: float | None) -> bool:
@@ -314,11 +375,23 @@ class Database:
         if not media:
             return None, None
         items = self.title_media(media["title_id"])
-        ids = [m["id"] for m in items]
-        if media_id not in ids:
+        title = self.get_title(media["title_id"])
+        key = self.episode_key(media, title["kind"])
+        keys = [self.episode_key(m, title["kind"]) for m in items]
+        if key not in keys:
             return None, None
-        i = ids.index(media_id)
-        key = (media["season"], media["episode"])
-        prev = next((m for m in reversed(items[:i]) if (m["season"], m["episode"]) != key), None)
-        nxt = next((m for m in items[i + 1:] if (m["season"], m["episode"]) != key), None)
-        return prev, nxt
+        i = keys.index(key)
+        return (items[i - 1] if i > 0 else None), (items[i + 1] if i + 1 < len(items) else None)
+
+    def find_title_by_tmdb(self, kind: str, tmdb_id: int, exclude: int) -> dict | None:
+        return self.q1("SELECT * FROM titles WHERE kind = ? AND tmdb_id = ? AND id != ? ORDER BY id",
+                       (kind, tmdb_id, exclude))
+
+
+def quality_of(m: dict) -> int:
+    """Vertical resolution class (1080, 720, ...) from Telegram metadata or the caption/file name."""
+    from .parser import quality_from_text
+
+    h, w = m.get("height") or 0, m.get("width") or 0
+    meta = max(h, round(w * 9 / 16)) if w > h else h  # 1920x800 (cinemascope) is still "1080p"
+    return max(meta, quality_from_text(m.get("caption"), m.get("file_name")))

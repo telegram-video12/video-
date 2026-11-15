@@ -21,7 +21,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import crypto_boost
 from .config import Settings
-from .db import Database
+from .db import Database, quality_of
 from .parser import normalize
 from .telegram import Scanner, TelegramService
 from .tmdb import TMDB
@@ -184,6 +184,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "completed": bool(m.get("completed")),
             "watched_at": m.get("watched_at"),
             "thumb": thumb_url(m["id"]),
+            "quality": m.get("quality") or quality_of(m),
+            "versions": m.get("versions", 1),
         }
 
     async def library(request: Request):
@@ -284,11 +286,17 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if not m:
             raise ApiError(404, "לא נמצא")
         prev, nxt = db.neighbours(media_id)
+        versions = db.versions(media_id)
+        watched = [v for v in versions if v.get("watched_at")]
+        if watched:  # progress is shared between versions of the same episode
+            last = max(watched, key=lambda v: v["watched_at"])
+            m = dict(m, position=last["position"], completed=max(v["completed"] or 0 for v in watched))
         return ok({
             "media": media_out(m),
             "title": db.get_title(m["title_id"]),
             "prev": media_out(prev) if prev else None,
             "next": media_out(nxt) if nxt else None,
+            "versions": [{"id": v["id"], "quality": v["quality"], "size": v["size"]} for v in db.versions(media_id)],
         })
 
     # -------------------------------------------------------------- progress

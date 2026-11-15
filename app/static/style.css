@@ -244,3 +244,5 @@ code { background: var(--bg-3); padding: 2px 6px; border-radius: 6px; direction:
 .link { color: var(--accent); text-decoration: underline; }
 .err-line { color: var(--danger); min-height: 20px; margin-top: 8px; font-size: 14px; }
 [hidden] { display: none !important; }
+
+.versions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }

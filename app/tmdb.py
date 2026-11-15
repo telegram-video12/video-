@@ -76,6 +76,10 @@ class TMDB:
             backdrop=meta["backdrop"],
             year=meta["year"] or title.get("year"),
         )
+        # The same movie/series under another name (e.g. Hebrew vs English caption) -> one entry
+        other = db.find_title_by_tmdb(title["kind"], meta["tmdb_id"], title["id"])
+        if other:
+            db.merge_titles(title["id"], other["id"])
         return True
 
     async def enrich_pending(self, db) -> None:

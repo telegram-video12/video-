@@ -65,7 +65,25 @@ def clean_name(text: str) -> str:
     text = re.sub(r"[^\w\s'׳\"&!?:-]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = text.strip(" -:|,–—")
+    # "הסרט: X" / "סדרה - X" -> "X"
+    text = re.sub(r"^(?:הסרט|סרט|הסדרה|סדרה|movie|film)\s*[:\-–]?\s+(?=\S)", "", text, flags=re.I)
     return text
+
+
+QUALITY_RE = re.compile(r"(?<!\d)(2160|1440|1080|720|576|480|360|240)[pi](?![a-z])", re.I)
+
+
+def quality_from_text(*texts: str | None) -> int:
+    """Highest resolution mentioned in a caption / file name, e.g. '1080p' -> 1080, '4K' -> 2160."""
+    best = 0
+    for t in texts:
+        if not t:
+            continue
+        for m in QUALITY_RE.finditer(t):
+            best = max(best, int(m.group(1)))
+        if re.search(r"\b(4k|uhd)\b", t, re.I):
+            best = max(best, 2160)
+    return best
 
 
 def normalize(name: str) -> str:

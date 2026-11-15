@@ -251,7 +251,8 @@ async function pageTitle(id) {
 function episodeRow(m, isSeries, version, current) {
   const p = pct(m);
   const title = isSeries && m.episode != null ? `פרק ${m.episode}` : (firstLine(m.caption) || m.file_name || 'וידאו');
-  const desc = [firstLine(m.caption) || m.file_name, fmtDur(m.duration), m.height ? m.height + 'p' : '', fmtSize(m.size)]
+  const desc = [firstLine(m.caption) || m.file_name, fmtDur(m.duration), m.quality ? m.quality + 'p' : '', fmtSize(m.size),
+                !editMode && m.versions > 1 ? `${m.versions} גרסאות` : '']
     .filter(Boolean).map(esc).join(' · ');
   const state = m.completed ? '<span class="badge ok">נצפה</span>'
     : m.position >= 10 ? `<span class="badge accent">עצרת ב-${fmtTime(m.position)}</span>` : '';
@@ -324,7 +325,7 @@ function bindEditTitle(t) {
 // -------------------------------------------------------------------- watch
 async function pageWatch(id) {
   $app.innerHTML = '<div class="spinner"></div>';
-  const {media: m, title: t, prev, next} = await api(`/api/media/${id}`);
+  const {media: m, title: t, prev, next, versions} = await api(`/api/media/${id}`);
   const isSeries = t.kind === 'series' && m.episode != null;
   document.title = `${t.name}${isSeries ? ' · ' + epLabel(m) : ''}`;
 
@@ -344,6 +345,9 @@ async function pageWatch(id) {
         ${next ? `<a class="btn primary" href="#/watch/${next.id}" title="הפרק הבא (N)">${esc(epLabel(next) || 'הבא')} ←</a>` : ''}
       </div>
     </div>
+    ${versions && versions.length > 1 ? `<div class="versions"><span class="muted">איכות:</span>
+      ${versions.map((x) => `<a class="tab ${x.id === m.id ? 'active' : ''}" href="#/watch/${x.id}">${x.quality ? x.quality + 'p' : '?'} · ${fmtSize(x.size)}</a>`).join('')}
+    </div>` : ''}
     <p class="muted" style="font-size:13px">קיצורי מקלדת: רווח = עצור/נגן · חיצים = 10 שניות · F = מסך מלא · N = הפרק הבא</p>
   </div>`;
 
