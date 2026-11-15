@@ -1497,9 +1497,21 @@ async function pageSettings(section) {
     const el = $('#scan-status');
     if (!el) return;
     const when = s.last_finished ? new Date(s.last_finished * 1000).toLocaleString('he-IL') : 'עדיין לא';
+    // per group: what the last scan found, and why nothing was added when that happens
+    const why = (r) => {
+      const parts = [`נבדקו ${n(r.checked)} הודעות`, `${n(r.videos)} סרטונים`, `נוספו ${n(r.added)}`];
+      let hint = '';
+      if (!r.checked) hint = r.first ? 'לא נמצאו הודעות בקבוצה.' : 'אין הודעות חדשות מאז הסריקה הקודמת.';
+      else if (!r.videos && r.files) hint = `יש ${n(r.files)} קבצים, אבל אף אחד מהם אינו קובץ וידאו (למשל RAR/ZIP או מסמכים).`;
+      else if (!r.videos) hint = 'אין בקבוצה סרטונים, רק הודעות טקסט, תמונות או קישורים.';
+      else if (!r.added && r.short === r.videos) hint = 'כל הסרטונים קצרים מ-3 דקות (טריילרים/קטעים), ולכן דולגו.';
+      else if (!r.added) hint = 'כל הסרטונים כבר נמצאים בספרייה.';
+      else if (r.short) hint = `${n(r.short)} סרטונים קצרים מ-3 דקות דולגו.`;
+      return `<div class="scan-rep"><b>${esc(r.chat)}</b>: ${parts.join(' · ')}${hint ? `<div class="muted">${esc(hint)}</div>` : ''}</div>`;
+    };
     el.innerHTML = s.running
-      ? `⏳ סורק${s.chat ? ': ' + esc(s.chat) : '...'} · נוספו ${s.added}`
-      : `סריקה אחרונה: ${when}${s.added ? ` · נוספו ${s.added}` : ''}${s.note ? `<div class="note" style="margin:8px 0 0">✓ ${esc(s.note)}</div>` : ''}${s.error ? `<div class="error-box" style="margin-top:8px">${esc(s.error)}</div>` : ''}`;
+      ? `⏳ סורק${s.chat ? ': ' + esc(s.chat) : '...'} · נוספו ${s.added}${s.queued ? '<div class="muted">הסריקה של הקבוצות שבחרת תתחיל מיד כשזה יסתיים.</div>' : ''}`
+      : `סריקה אחרונה: ${when}${s.added ? ` · נוספו ${s.added}` : ''}${(s.report || []).map(why).join('')}${s.note ? `<div class="note" style="margin:8px 0 0">✓ ${esc(s.note)}</div>` : ''}${s.error ? `<div class="error-box" style="margin-top:8px">${esc(s.error)}</div>` : ''}`;
   };
   const startPoll = () => {
     clearInterval(poll);

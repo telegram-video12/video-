@@ -104,3 +104,27 @@ def test_name_inside_a_longer_name_joins_same_movie(client):
     sugg = possible_duplicates(db)
     assert [(p["a"]["name"], p["b"]["name"], p["extras"]) for p in sugg] == \
         [("אבא גנוב 2", "חן סרטים אבא גנוב 2 ישראלי", ["חן סרטים", "ישראלי"])]
+
+
+def test_scan_report_says_why_nothing_was_added(client):
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, "not-video"), (2, "not-video"), (3, None), (4, vm(4, "טריילר", duration=60))]
+    scan(client)
+    rep = client.get("/api/status").json()["scan"]["report"][0]
+    assert (rep["checked"], rep["files"], rep["videos"], rep["short"], rep["added"]) == (4, 2, 1, 1, 0)
+
+
+def test_scan_asked_while_busy_runs_again_after(client):
+    import asyncio
+    login(client)
+    sc = client.app.state.scanner
+
+    async def go():
+        async with sc._lock:  # another scan is running
+            await sc.scan()
+        assert sc._again is True
+        await asyncio.sleep(0.05)  # ... and the waiting one runs once the lock is free
+    client.post("/api/chats", json={"chats": [{"id": -100, "title": "קבוצת סדרות", "enabled": True}]})
+    sc.status["running"] = False
+    asyncio.run(go())

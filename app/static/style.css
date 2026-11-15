@@ -465,6 +465,8 @@ body.pl-fs { overflow: hidden; }
 .gbar b { font-weight: 600; font-size: 12.5px; color: var(--muted); text-align: left; }
 @media (max-width: 719px) { .hist-item .thumb { width: 88px; } .hist-time { display: none; } .dbar .dval { display: none; } }
 
+.scan-rep { margin-top: 8px; font-size: 13px; line-height: 1.5; }
+.scan-rep .muted { font-size: 12.5px; }
 /* ---------- possible duplicates ---------- */
 .dup { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 10px; background: var(--s2); }
 .dup-pair { display: flex; align-items: center; gap: 8px; }

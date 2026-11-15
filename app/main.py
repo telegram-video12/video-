@@ -826,9 +826,12 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if (await body(request)).get("full"):
             for c in db.chats():
                 db.reset_chat(c["id"])
-        if not scanner.status.get("running"):
-            asyncio.create_task(scanner.scan())
-            await asyncio.sleep(0)
+        if scanner.status.get("running"):
+            scanner._again = True  # busy (e.g. sorting names after an update): scan again as soon as it ends
+            scanner.status["queued"] = True
+            return ok({**scanner.status, "queued": True})
+        asyncio.create_task(scanner.scan())
+        await asyncio.sleep(0)
         return ok(scanner.status)
 
     # ------------------------------------------------------------- lifecycle

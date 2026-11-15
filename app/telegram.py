@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 CHUNK = 1024 * 1024  # Telegram serves files in 1 MiB-aligned parts
 MSG_CACHE_SECONDS = 20 * 60
 DOWNLOAD_STALL_SECONDS = 25  # no data from Telegram for this long -> reconnect
+NOT_VIDEO = "not-video"
 VIDEO_EXTS = (".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv", ".flv")
 
 
@@ -221,6 +222,8 @@ class TelegramService:
             v = message_to_video(chat_id, msg)
             if v:
                 self._msg_cache[(chat_id, msg.id)] = (time.time(), msg)
+            elif getattr(msg, "file", None) is not None:
+                v = NOT_VIDEO  # a file that is not a video (archive, picture, document...)
             yield msg.id, v
 
     async def get_message(self, chat_id: int, msg_id: int, fresh: bool = False):
@@ -360,9 +363,12 @@ class Scanner:
 
     async def scan(self, chat_ids: list[int] | None = None) -> dict:
         if self._lock.locked():
+            self._again = True  # e.g. a group was just chosen while another scan runs: scan again right after
             return self.status
+        self._again = False
         async with self._lock:
-            self.status = {"running": True, "chat": None, "added": 0, "last_finished": self.status.get("last_finished"), "error": None}
+            self.status = {"running": True, "chat": None, "added": 0, "last_finished": self.status.get("last_finished"),
+                           "error": None, "report": []}
             from .branding import VERSION as BRANDING_VERSION
             upgraded = self.db.get_pref("branding_version") != BRANDING_VERSION
             changed = upgraded or any(c.get("branding") is None for c in self.db.chats(enabled_only=True))
@@ -373,11 +379,26 @@ class Scanner:
                     self.status["chat"] = chat["title"]
                     last_seen = chat["last_msg_id"]
                     count = 0
+                    # what was found in this group, so Settings can say why nothing was added
+                    rep = {"chat": chat["title"], "checked": 0, "videos": 0, "added": 0, "short": 0,
+                           "files": 0, "first": not chat["last_msg_id"]}
+                    self.status["report"].append(rep)
                     async for msg_id, v in self.tg.iter_messages(chat["id"], min_id=chat["last_msg_id"]):
                         count += 1
+                        rep["checked"] = count
                         last_seen = max(last_seen, msg_id)
-                        if v is not None and self._add_video(self.db, v, chat, self.min_duration):
+                        if v == NOT_VIDEO:
+                            rep["files"] += 1
+                            continue
+                        if v is None:
+                            continue
+                        rep["videos"] += 1
+                        if self._add_video(self.db, v, chat, self.min_duration):
                             self.status["added"] += 1
+                            rep["added"] += 1
+                        elif self.min_duration and ((v.duration and v.duration < self.min_duration)
+                                                    or (not v.duration and v.size < 50 * 1024 * 1024)):
+                            rep["short"] += 1
                         if count % 200 == 0:
                             self.db.set_chat_scanned(chat["id"], last_seen)
                     self.db.set_chat_scanned(chat["id"], last_seen)
@@ -398,4 +419,6 @@ class Scanner:
                 self.status["running"] = False
                 self.status["chat"] = None
                 self.status["last_finished"] = time.time()
-            return self.status
+        if getattr(self, "_again", False):
+            asyncio.ensure_future(self.scan())
+        return self.status
