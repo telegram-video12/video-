@@ -472,8 +472,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             m = db.get_media(media_id)
             if not m or missing.exists() or not tg.authorized:
                 raise ApiError(404)
-            try:
-                data = await tg.thumbnail(m["chat_id"], m["msg_id"])
+            try:  # never let one slow picture hold the browser's connections (it only has a few)
+                data = await asyncio.wait_for(tg.thumbnail(m["chat_id"], m["msg_id"]), 12)
+            except asyncio.TimeoutError:
+                raise ApiError(504) from None  # try again next time; not marked as missing
             except Exception:  # noqa: BLE001
                 data = None
             if not data:

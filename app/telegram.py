@@ -215,12 +215,51 @@ class TelegramService:
                     raise
                 msg = await self.get_message(chat_id, msg_id, fresh=True)
 
+    async def _get_message_batched(self, chat_id: int, msg_id: int):
+        """A page shows dozens of pictures at once: ask Telegram for all their messages in ONE request
+        instead of one request each (many quick requests make Telegram pause us for up to a minute)."""
+        cached = self._msg_cache.get((chat_id, msg_id))
+        if cached and time.time() - cached[0] < MSG_CACHE_SECONDS:
+            return cached[1]
+        if not hasattr(self, "_batch"):
+            self._batch: dict[int, dict[int, asyncio.Future]] = {}
+        waiting = self._batch.setdefault(chat_id, {})
+        fut = waiting.get(msg_id)
+        if fut is None:
+            fut = waiting[msg_id] = asyncio.get_running_loop().create_future()
+            if len(waiting) == 1:
+                asyncio.get_running_loop().call_later(0.05, lambda: asyncio.ensure_future(self._flush_batch(chat_id)))
+        return await asyncio.shield(fut)
+
+    async def _flush_batch(self, chat_id: int) -> None:
+        waiting = self._batch.pop(chat_id, {})
+        ids = list(waiting)
+        try:
+            client = self._require()
+            entity = await self._entity(chat_id)
+            for i in range(0, len(ids), 100):
+                part = ids[i:i + 100]
+                msgs = await client.get_messages(entity, ids=part)
+                for mid, msg in zip(part, msgs):
+                    if msg is not None:
+                        self._msg_cache[(chat_id, mid)] = (time.time(), msg)
+                        waiting[mid].set_result(msg)
+                    else:
+                        waiting[mid].set_exception(FileNotFoundError("message was deleted from Telegram"))
+        except Exception as e:  # noqa: BLE001 - hand the error to everyone who is waiting
+            for f in waiting.values():
+                if not f.done():
+                    f.set_exception(e)
+
     async def thumbnail(self, chat_id: int, msg_id: int) -> bytes | None:
         client = self._require()
         if not hasattr(self, "_thumb_sem"):  # a page of posters must not starve video streaming
             self._thumb_sem = asyncio.Semaphore(4)
+        try:
+            msg = await self._get_message_batched(chat_id, msg_id)
+        except FileNotFoundError:
+            return None
         async with self._thumb_sem:
-            msg = await self.get_message(chat_id, msg_id)
             try:
                 data = await client.download_media(msg, file=bytes, thumb=-1)
             except (TypeError, ValueError, IndexError):

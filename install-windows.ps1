@@ -62,6 +62,10 @@ $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"   # pip print
 & $Python -m pip install -r (Join-Path $Dir "requirements.txt") --quiet --no-warn-script-location
 $ErrorActionPreference = $old
 if ($LASTEXITCODE -ne 0) { Write-Host "Installing components failed (see above)." -ForegroundColor Red; return }
+# Optional speed-up for Telegram downloads (ready-made for Windows; the site works without it)
+$ErrorActionPreference = "Continue"
+& $Python -m pip install cryptg --only-binary=:all: --quiet --no-warn-script-location 2>&1 | Out-Null
+$ErrorActionPreference = $old
 
 # 4. Desktop shortcuts
 Say "Step 4/4: Desktop shortcuts"

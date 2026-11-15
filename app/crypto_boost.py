@@ -8,13 +8,20 @@ Termux's libcrypto directly and hand it to Telethon.
 from __future__ import annotations
 
 import ctypes
+import glob
 import logging
 import os
+import sys
 
 log = logging.getLogger(__name__)
 
 
 def _candidates() -> list[str]:
+    if os.name == "nt":  # Windows: Python ships its own OpenSSL (libcrypto-3.dll) next to the ssl module
+        import ssl  # noqa: F401 - loads the DLL's dependencies
+
+        dirs = {os.path.join(sys.base_prefix, "DLLs"), os.path.join(sys.prefix, "DLLs"), sys.base_prefix}
+        return [f for d in dirs for f in sorted(glob.glob(os.path.join(d, "libcrypto*.dll")))]
     prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
     names = ["libcrypto.so", "libcrypto.so.3", "libcrypto.so.1.1", "libssl.so", "libssl.so.3"]
     return [os.path.join(prefix, "lib", n) for n in names] + names
