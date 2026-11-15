@@ -609,3 +609,9 @@ def test_tmdb_details_genres_rating_cast_and_season_marking(client, monkeypatch)
     db = client.app.state.db
     db.x("UPDATE titles SET tmdb_details = 0, genres = NULL")
     assert len(db.titles_needing_tmdb()) == 3
+
+
+def test_phone_number_with_invisible_marks_is_accepted(client):
+    login(client)
+    for raw in ["‎050-123 4567‎", "‪+972 50 123 4567‬", "00972501234567"]:
+        assert client.post("/api/tg/send-code", json={"phone": raw}).json()["phone"] == "+972501234567"

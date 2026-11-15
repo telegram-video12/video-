@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import unicodedata
 import json
 import hmac
 import logging
@@ -533,7 +534,12 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         return ok()
 
     async def tg_send_code(request: Request):
-        phone = re.sub(r"[\s\-()]", "", str((await body(request)).get("phone", "")))
+        raw = str((await body(request)).get("phone", "")).strip()
+        # keep only digits (invisible direction marks from copy/paste are dropped) and a leading +
+        digits = "".join(str(unicodedata.digit(c)) for c in raw if c.isdigit())
+        phone = ("+" if raw.lstrip("\u200e\u200f\u202a\u202b\u202c\u2066\u2067\u2068\u2069 ").startswith("+") else "") + digits
+        if phone.startswith("00"):
+            phone = "+" + phone[2:]
         if phone.startswith("0"):
             phone = "+972" + phone[1:]  # Israeli local format
         if not re.fullmatch(r"\+?\d{8,15}", phone):
