@@ -348,6 +348,20 @@ code { background: var(--s3); padding: 2px 6px; border-radius: 6px; direction: l
 /* ======================================================================
    Computer (wide screens): top navigation, wider grids, two columns
    ====================================================================== */
+/* ---------- surprise me (🎲) ---------- */
+.dice-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.dice-head h3 { margin: 0; }
+.dice-head .chips { margin: 0; padding: 0; }
+.dice-pick { display: flex; gap: 14px; align-items: flex-start; }
+.dice-pick .poster { width: 120px; flex-shrink: 0; }
+.dice-info { min-width: 0; }
+.dice-info h2 { font-size: 20px; font-weight: 800; line-height: 1.2; margin-bottom: 4px; }
+.dice-info .facts { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.dice-info .ov { font-size: 13.5px; color: #c9cdd8; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; margin: 0; }
+.dice-actions { display: flex; gap: 10px; margin-top: 16px; }
+.dice-actions .btn { flex: 1; text-align: center; }
+.dice-sheet .spinner { margin: 30px auto; }
+
 @media (min-width: 1000px) {
   :root { --gutter: clamp(32px, 3vw, 64px); }
   .tabbar { display: none; }
@@ -447,6 +461,8 @@ code { background: var(--s3); padding: 2px 6px; border-radius: 6px; direction: l
 
   /* bottom sheets become centred dialogs */
   .sheet-wrap { align-items: center; }
+  .sheet.dice-sheet { max-width: 560px; }
+  .dice-pick .poster { width: 150px; }
   .sheet { border-radius: 18px; border-bottom: 1px solid var(--line); max-width: 460px; transform: translateY(20px) scale(.98); opacity: 0; transition: transform .15s, opacity .15s; }
   .sheet-wrap.open .sheet { transform: none; opacity: 1; }
   .sheet-grip { display: none; }

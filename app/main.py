@@ -204,6 +204,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "watched_at": m.get("watched_at"),
             "thumb": thumb_url(m["id"]),
             "quality": m.get("quality") or quality_of(m),
+            "added_at": m.get("added_at"),
             "versions": m.get("versions", 1),
         }
 
@@ -265,6 +266,58 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             ]
         return ok(out)
 
+    def card(t: dict) -> dict:
+        t = {k: v for k, v in t.items() if not k.startswith("_")}
+        t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
+        return t
+
+    async def home_rows(request: Request):
+        """Home page extras: new episodes of what you watch, and rows of the genres you watch most."""
+        items = db.library_titles()
+        fresh = sorted((t for t in items if t["new_count"]), key=lambda t: t["new_at"] or 0, reverse=True)
+        # your taste: genres of what you watched (recent watching counts a little more)
+        score: dict[str, float] = {}
+        watched = sorted((t for t in items if t["last_watched"]), key=lambda t: t["last_watched"], reverse=True)
+        for i, t in enumerate(watched[:300]):
+            for g in t["genres"]:
+                score[g] = score.get(g, 0) + 1 + 1 / (1 + i / 10)
+        based_on_you = bool(score)
+        if not score:  # nothing watched yet: the genres you have the most of
+            for t in items:
+                for g in t["genres"]:
+                    score[g] = score.get(g, 0) + 1
+        day = int(time.time() // 86400)  # the order changes once a day, so the rows feel fresh
+
+        def pick(g: str) -> list[dict]:
+            cands = [t for t in items if g in t["genres"] and not (t["media_count"] and t["watched_count"] >= t["media_count"])]
+            cands.sort(key=lambda t: (t["watched_count"] == 0 and not t["poster"],  # pictures first
+                                      -(t["rating"] or 0) + ((t["id"] * 7919 + day) % 13) / 10))
+            return [card(t) for t in cands[:20]]
+
+        rows = []
+        for g, _ in sorted(score.items(), key=lambda x: -x[1]):
+            row = pick(g)
+            if len(row) >= 4:
+                rows.append({"genre": g, "titles": row})
+            if len(rows) >= 4:
+                break
+        return ok({"new": [card(t) for t in fresh[:20]], "genres": rows, "personal": based_on_you})
+
+    async def random_pick(request: Request):
+        """'Surprise me': something you have not started yet. ?kind=series|movie&not=<id>"""
+        import random
+
+        qp = request.query_params
+        kind, skip = qp.get("kind", ""), qp.get("not", "")
+        items = [t for t in db.library_titles()
+                 if not t["watched_count"] and not t["last_watched"]
+                 and (kind not in ("series", "movie") or t["kind"] == kind) and str(t["id"]) != skip]
+        nice = [t for t in items if t["poster"] and t["overview"]]  # ones with a picture and a story first
+        pool = nice or items
+        if not pool:
+            raise ApiError(404, "אין כרגע משהו שעוד לא התחלת")
+        return ok(card(random.choice(pool)))
+
     async def genres_list(request: Request):
         """Genres in the library with how many titles have each: ?kind=series|movie"""
         kind = request.query_params.get("kind", "")
@@ -319,6 +372,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         t["cast"] = t.pop("cast_json")
         return ok({
             "title": t,
+            "new_since": db.last_watched_at(title_id) if t["kind"] == "series" else None,
             "season_labels": db.season_labels(title_id),
             "media": items,
             "resume": {"media": media_out(resume["media"]), "position": resume["position"], "state": resume["state"]}
@@ -768,7 +822,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/setup-state", setup_state), R("/api/setup", setup, methods=["POST"]),
         R("/api/login", login, methods=["POST"]), R("/api/logout", logout, methods=["POST"]),
         R("/api/password", change_password, methods=["POST"]),
-        R("/api/library", library), R("/api/genres", genres_list),
+        R("/api/library", library), R("/api/genres", genres_list), R("/api/home", home_rows), R("/api/random", random_pick),
         R("/api/watched-many", watched_many, methods=["POST"]),
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),
         R("/api/titles/{id:int}/merge", merge_title, methods=["POST"]),

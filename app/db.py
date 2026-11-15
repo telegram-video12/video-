@@ -307,7 +307,9 @@ class Database:
             from .parser import normalize
 
             rows = self.list_titles()
-            for t in rows:  # search keys and parsed genres, computed once per change
+            fresh = self.new_episodes()
+            for t in rows:
+                t["new_count"], t["new_at"] = fresh.get(t["id"], (0, None))  # search keys and parsed genres, computed once per change
                 t["_key"] = normalize(t["name"] or "")
                 t["_okey"] = normalize(t["original_name"] or "")
                 try:
@@ -316,6 +318,28 @@ class Database:
                     t["genres"] = []
             self._titles_cache = c = (self.version, self.soft_version, time.time(), rows)
         return c[3]
+
+    def new_episodes(self) -> dict[int, tuple[int, float]]:
+        """Series you watch that got episodes AFTER you last watched them (and you have not seen yet):
+        {title_id: (how many new episodes, when the newest arrived)}."""
+        rows = self.q(
+            f"""WITH w AS (SELECT m.title_id, MAX(p.updated_at) AS last FROM progress p JOIN media m ON m.id = p.media_id
+                           WHERE p.completed = 1 OR p.position >= {MIN_STARTED} GROUP BY m.title_id),
+                     done AS (SELECT DISTINCT m.title_id, {EP_KEY} AS k FROM progress p JOIN media m ON m.id = p.media_id
+                              JOIN titles t ON t.id = m.title_id WHERE p.completed = 1)
+                SELECT m.title_id, COUNT(DISTINCT {EP_KEY}) AS n, MAX(m.added_at) AS newest
+                FROM media m JOIN titles t ON t.id = m.title_id AND t.kind = 'series'
+                JOIN w ON w.title_id = m.title_id
+                WHERE m.hidden = 0 AND m.added_at > w.last
+                  AND NOT EXISTS (SELECT 1 FROM done d WHERE d.title_id = m.title_id AND d.k = {EP_KEY})
+                GROUP BY m.title_id"""
+        )
+        return {r["title_id"]: (r["n"], r["newest"]) for r in rows}
+
+    def last_watched_at(self, title_id: int) -> float | None:
+        r = self.q1(f"""SELECT MAX(p.updated_at) AS last FROM progress p JOIN media m ON m.id = p.media_id
+                        WHERE m.title_id = ? AND (p.completed = 1 OR p.position >= {MIN_STARTED})""", (title_id,))
+        return r["last"] if r else None
 
     def list_titles(self) -> list[dict]:
         return self.q(

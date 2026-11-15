@@ -5,6 +5,7 @@ const $app = document.getElementById('app');
 const $tabbar = document.getElementById('tabbar');
 let cleanup = null;          // called when leaving the current page
 let libraryCache = null;
+let titleNewSince = null;    // episodes that arrived after this time (and are unwatched) get a "new" badge
 
 // ------------------------------------------------------------------ helpers
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -92,9 +93,10 @@ $tabbar.addEventListener('click', (e) => {
   if (a && a.getAttribute('href') === (location.hash || '#/')) { e.preventDefault(); window.scrollTo({top: 0, behavior: 'smooth'}); }
 });
 
-function pageHeader(title, sub = '', {logo = false} = {}) {
+function pageHeader(title, sub = '', {logo = false, dice = null} = {}) {
   return `<header class="phead${logo ? ' home-head' : ''}">
     <div class="phead-title">${logo ? '<span class="logo"><i></i>הספרייה שלי</span>' : `<h1>${esc(title)}</h1>${sub ? `<div class="phead-sub">${sub}</div>` : ''}`}</div>
+    ${dice !== null ? `<button class="iconbtn dice" data-dice="${dice}" aria-label="תפתיע אותי" title="תפתיע אותי">🎲</button>` : ''}
     <a class="iconbtn" href="#/search" aria-label="חיפוש">🔍</a>
   </header>`;
 }
@@ -110,19 +112,24 @@ const n = (x) => Number(x || 0).toLocaleString('he-IL');
 
 // ---------------------------------------------------------------------- home
 async function pageHome() {
-  if (!libraryCache) $app.innerHTML = pageHeader('', '', {logo: true}) + skeletonRows();
-  const [all, series, movies] = await Promise.all([
+  const head = pageHeader('', '', {logo: true, dice: ''});
+  if (!libraryCache) $app.innerHTML = head + skeletonRows();
+  const [all, series, movies, extra] = await Promise.all([
     api('/api/library?limit=20'),
     api('/api/library?kind=series&limit=20&nocont=1'),
     api('/api/library?kind=movie&limit=20&nocont=1'),
+    api('/api/home').catch(() => ({new: [], genres: []})),
   ]);
   libraryCache = all;
-  if (!all.counts.all) { $app.innerHTML = pageHeader('', '', {logo: true}) + emptyLibrary(); return; }
+  if (!all.counts.all) { $app.innerHTML = head + emptyLibrary(); return; }
   const cont = all.continue || [];
   const fresh = [...series.titles, ...movies.titles].find((t) => t.backdrop);
   const top = cont[0] || (fresh ? {title: fresh} : null);
-  $app.innerHTML = pageHeader('', '', {logo: true}) + (top ? banner(top) : '') +
+  const posterRow = (list) => `<div class="hrow">${list.map(posterCard).join('')}</div>`;
+  $app.innerHTML = head + (top ? banner(top) : '') +
     (cont.length ? rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`) : '') +
+    (extra.new.length ? rowSection('✨ פרקים חדשים', '', posterRow(extra.new)) : '') +
+    extra.genres.map((r) => rowSection(extra.personal ? `כי אתה אוהב ${r.genre}` : r.genre, '', posterRow(r.titles))).join('') +
     (series.titles.length ? rowSection('סדרות שנוספו לאחרונה', '#/series', `<div class="hrow">${series.titles.map(posterCard).join('')}</div>`) : '') +
     (movies.titles.length ? rowSection('סרטים שנוספו לאחרונה', '#/movies', `<div class="hrow">${movies.titles.map(posterCard).join('')}</div>`) : '');
 }
@@ -221,6 +228,53 @@ function multiSheet(title, options, chosen, note = '') {
   });
 }
 
+// ------------------------------------------------------------- surprise me
+// 🎲 picks something you have not started yet; "another one" keeps rolling
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-dice]');
+  if (b) { e.preventDefault(); surprise(b.dataset.dice || ''); }
+});
+
+async function surprise(kind) {
+  const el = document.createElement('div');
+  el.className = 'sheet-wrap';
+  el.innerHTML = '<div class="sheet dice-sheet"><div class="sheet-grip"></div><div class="spinner"></div></div>';
+  const close = () => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); };
+  el.addEventListener('click', (e) => { if (e.target === el || e.target.closest('[data-close]')) close(); });
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('open'));
+  const kinds = [['', 'הכל'], ['series', 'סדרה'], ['movie', 'סרט']];
+  let last = '';
+  const roll = async () => {
+    const box = el.querySelector('.sheet');
+    let t;
+    try { t = await api(`/api/random?kind=${kind}&not=${last}`); } catch (err) {
+      box.innerHTML = `<div class="sheet-grip"></div><h3>🎲 תפתיע אותי</h3><p class="muted">${esc(err.message)}</p>
+        <div class="dice-actions"><button class="btn ghost" data-close>סגור</button></div>`;
+      return;
+    }
+    last = t.id;
+    const facts = [t.kind === 'series' ? 'סדרה' : 'סרט', t.year, (t.genres || []).slice(0, 2).join(', '), t.rating ? `⭐ ${t.rating}` : '']
+      .filter(Boolean).map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ');
+    box.innerHTML = `<div class="sheet-grip"></div>
+      <div class="dice-head"><h3>🎲 תפתיע אותי</h3>
+        <div class="chips">${kinds.map(([k, l]) => `<button class="tab ${k === kind ? 'active' : ''}" data-k="${k}">${l}</button>`).join('')}</div></div>
+      <a class="dice-pick" href="#/title/${t.id}">
+        <div class="poster"><div class="ph">${esc(t.name)}</div>${img(t.poster)}</div>
+        <div class="dice-info"><h2>${esc(t.name)}</h2><div class="facts">${facts}</div>
+          ${t.overview ? `<p class="ov">${esc(t.overview)}</p>` : ''}</div>
+      </a>
+      <div class="dice-actions">
+        <a class="btn primary" href="#/title/${t.id}">בוא נראה ›</a>
+        <button class="btn ghost" data-again>🎲 עוד אחד</button>
+      </div>`;
+    box.querySelector('[data-again]').onclick = roll;
+    box.querySelectorAll('[data-k]').forEach((c) => { c.onclick = () => { kind = c.dataset.k; last = ''; roll(); }; });
+    box.querySelectorAll('a').forEach((a) => a.addEventListener('click', close));
+  };
+  roll();
+}
+
 function bottomSheet(title, options, current) {
   return new Promise((resolve) => {
     const el = document.createElement('div');
@@ -251,7 +305,7 @@ async function pageList(kind, st) {
   const query = (offset, limit) => `/api/library?kind=${kind}&state=${f.state}&decade=${f.decade}&genres=${encodeURIComponent((f.genres || []).join(','))}&sort=${sortOf()}&offset=${offset}&limit=${limit}&nocont=1`;
   const label = (list, v) => (list.find(([k]) => k === v) || list[0])[1];
 
-  const shell = (sub, body) => `<div class="listhead">` + pageHeader(title, sub) + `
+  const shell = (sub, body) => `<div class="listhead">` + pageHeader(title, sub, {dice: kind}) + `
     <div class="filters">
       <div class="chips">${states.map(([v, l]) => `<button class="tab ${f.state === v ? 'active' : ''}" data-state="${v}">${l}</button>`).join('')}</div>
       <div class="chips">
@@ -418,7 +472,8 @@ function posterCard(t) {
     : null;
   // numbers in a right-to-left line get reordered by the browser, so each one is isolated
   const movieSub = [t.year, t.duration ? fmtLen(t.duration) : ''].filter(Boolean).map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ') || 'סרט';
-  const corner = watchedAll ? '<span class="badge ok corner">✓ נצפה</span>'
+  const corner = t.new_count ? `<span class="badge new corner">${t.new_count === 1 ? 'פרק חדש' : `${t.new_count} פרקים חדשים`}</span>`
+    : watchedAll ? '<span class="badge ok corner">✓ נצפה</span>'
     : t.watched_count ? `<span class="badge accent corner">${t.kind === 'series' ? `${t.watched_count}/${t.media_count}` : 'בצפייה'}</span>` : '';
   return `<a class="poster-card" href="#/title/${t.id}">
     <div class="poster">
@@ -440,6 +495,7 @@ async function pageTitle(id) {
   $app.innerHTML = '<div class="spinner"></div>';
   const data = await api(`/api/titles/${id}${editMode ? '?hidden=true' : ''}`);
   const {title: t, media, resume} = data;
+  titleNewSince = data.new_since || null;
   const labels = data.season_labels || {};
   const isSeries = t.kind === 'series';
 
@@ -594,7 +650,8 @@ function episodeRow(m, isSeries, version, current) {
                 !editMode && m.versions > 1 ? `${m.versions} גרסאות` : '']
     .filter(Boolean).map(esc).join(' · ');
   const state = m.completed ? '<span class="badge ok">נצפה</span>'
-    : m.position >= 10 ? `<span class="badge accent">עצרת ב-${fmtTime(m.position)}</span>` : '';
+    : m.position >= 10 ? `<span class="badge accent">עצרת ב-${fmtTime(m.position)}</span>`
+    : titleNewSince && m.added_at > titleNewSince ? '<span class="badge new">חדש</span>' : '';
   return `<div class="ep ${current ? 'current' : ''} ${m.hidden ? 'is-hidden' : ''}" data-id="${m.id}">
     <a class="num" href="#/watch/${m.id}">${isSeries && m.episode != null ? m.episode : '▶'}</a>
     <a class="thumb" href="#/watch/${m.id}">${img(m.thumb)}${p ? `<div class="bar"><i style="width:${p}%"></i></div>` : ''}</a>
