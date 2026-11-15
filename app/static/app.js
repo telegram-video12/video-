@@ -799,7 +799,9 @@ async function pageSettings() {
   $('#save-phrases').onclick = () => run(async () => {
     await api('/api/settings', {method: 'POST', body: {strip_phrases: $('#strip-phrases').value}});
     libraryCache = null;
-    alert('נשמר! השמות מסודרים מחדש ברקע. בעוד דקה-שתיים זה יופיע בספרייה.');
+    renderScan({running: true, chat: 'מסדר שמות לפי הרשימה שלך', added: 0});
+    startPoll();
+    $('#scan-status').scrollIntoView({behavior: 'smooth', block: 'center'});
   });
   $('#change-pw').onclick = () => run(async () => {
     await api('/api/password', {method: 'POST', body: {current: $('#pw-cur').value, new: $('#pw-new').value}});
@@ -818,7 +820,7 @@ async function pageSettings() {
     const when = s.last_finished ? new Date(s.last_finished * 1000).toLocaleString('he-IL') : 'עדיין לא';
     el.innerHTML = s.running
       ? `⏳ סורק${s.chat ? ': ' + esc(s.chat) : '...'} · נוספו ${s.added}`
-      : `סריקה אחרונה: ${when}${s.added ? ` · נוספו ${s.added}` : ''}${s.error ? `<div class="error-box" style="margin-top:8px">${esc(s.error)}</div>` : ''}`;
+      : `סריקה אחרונה: ${when}${s.added ? ` · נוספו ${s.added}` : ''}${s.note ? `<div class="note" style="margin:8px 0 0">✓ ${esc(s.note)}</div>` : ''}${s.error ? `<div class="error-box" style="margin-top:8px">${esc(s.error)}</div>` : ''}`;
   };
   const startPoll = () => {
     clearInterval(poll);

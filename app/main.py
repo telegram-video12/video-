@@ -468,9 +468,19 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             from .library import regroup_all
 
             async def regroup() -> None:
-                scanner.status["chat"] = "מסדר שמות"
-                await asyncio.to_thread(regroup_all, db)
-                scanner.status["chat"] = None
+                before = db.q1("SELECT COUNT(*) AS c FROM titles")["c"]
+                scanner.status.update(running=True, chat="מסדר שמות לפי הרשימה שלך", added=0, error=None, note=None)
+                try:
+                    moved = await asyncio.to_thread(regroup_all, db)
+                    after = db.q1("SELECT COUNT(*) AS c FROM titles")["c"]
+                    scanner.status["note"] = (f"ניקוי שמות הסתיים: {moved:,} קבצים קיבלו שם נקי, "
+                                              f"{max(0, before - after):,} כפילויות אוחדו")
+                    log.info("strip phrases applied: %d videos re-filed, titles %d -> %d", moved, before, after)
+                except Exception as e:  # noqa: BLE001 - show it in Settings instead of failing silently
+                    log.exception("re-filing names failed")
+                    scanner.status["error"] = f"ניקוי שמות נכשל: {type(e).__name__}: {e}"
+                finally:
+                    scanner.status.update(running=False, chat=None, last_finished=time.time())
                 scanner.start_tmdb()
             asyncio.create_task(regroup())
         if "api_id" in payload or "api_hash" in payload:
@@ -562,8 +572,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         try:
             await asyncio.to_thread(migrate_norms, db)
             await asyncio.to_thread(repair, db)
-        except Exception:  # noqa: BLE001 - never take the site down for this
+        except Exception as e:  # noqa: BLE001 - never take the site down for this; show it in Settings
             log.exception("library upkeep failed")
+            scanner.status["error"] = f"סידור הספרייה נכשל: {type(e).__name__}: {e}"
         finally:
             scanner.status.update(running=False, chat=None)
         if tg.authorized:
