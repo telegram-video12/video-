@@ -463,3 +463,26 @@ def test_manual_strip_phrases(client):
     lib = client.get("/api/library").json()
     assert lib["total"] == 1 and lib["titles"][0]["name"] == "טיטאניק"
     assert client.get("/api/status").json()["strip_phrases"] == ["שקד הפקות"]
+
+
+def test_tmdb_stops_on_rejected_key_and_hides_it(client, monkeypatch, caplog):
+    import asyncio
+    import httpx
+    from app.tmdb import TMDB
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(i, vm(i, f"סרט בדיקה {i} (2001)")) for i in range(1, 40)]
+    scan(client)
+    calls = []
+
+    async def lookup(self, kind, name, year=None, tmdb_id=None):
+        calls.append(name)
+        req = httpx.Request("GET", "https://api.themoviedb.org/3/search/movie?api_key=SECRETKEY")
+        raise httpx.HTTPStatusError("401", request=req, response=httpx.Response(401, request=req))
+    monkeypatch.setattr(TMDB, "lookup", lookup)
+    t = TMDB("SECRETKEY")
+    asyncio.run(t.enrich_pending(client.app.state.db))
+    assert t.stopped and len(calls) <= 6            # gave up after the first batch
+    assert "SECRETKEY" not in caplog.text
+    # titles are still pending for the next (valid) key
+    assert len(client.app.state.db.titles_needing_tmdb()) >= 30

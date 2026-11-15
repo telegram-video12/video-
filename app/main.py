@@ -436,6 +436,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if "tmdb_api_key" in payload:
             key = str(payload["tmdb_api_key"] or "").strip()
             settings.save(tmdb_api_key=key)
+            if scanner.tmdb:
+                scanner.tmdb.stopped = True  # stop the run that uses the old key
             scanner.tmdb = TMDB(key) if key else None
             if key:  # look up titles that were added before the key existed
                 db.x("UPDATE titles SET tmdb_checked = 0 WHERE tmdb_id IS NULL")

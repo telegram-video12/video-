@@ -18,6 +18,7 @@ class TMDB:
         self.bearer = api_key.startswith("eyJ")
         self._client: httpx.AsyncClient | None = None
         self.status = {"running": False, "done": 0, "total": 0}
+        self.stopped = False  # set when the key is replaced or rejected: stop the background run
 
     async def _get(self, client: httpx.AsyncClient, path: str, **params) -> dict:
         headers = {}
@@ -101,8 +102,16 @@ class TMDB:
     async def enrich_title(self, db, title: dict, tmdb_id: int | None = None) -> bool:
         try:
             meta = await self.lookup(title["kind"], title["name"], title.get("year"), tmdb_id)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:  # key revoked/replaced: no point trying the rest
+                if not self.stopped:
+                    log.warning("TMDB rejected the API key (401) - stopping; set a valid key in Settings")
+                self.stopped = True
+            else:  # never log the URL: it contains the API key
+                log.warning("TMDB lookup failed for %s: HTTP %s", title["name"], e.response.status_code)
+            return False
         except Exception as e:  # noqa: BLE001
-            log.warning("TMDB lookup failed for %s: %s", title["name"], e)
+            log.warning("TMDB lookup failed for %s: %s", title["name"], type(e).__name__)
             return False
         if not meta:
             db.update_title(title["id"], soft=True, tmdb_checked=1)
@@ -138,6 +147,8 @@ class TMDB:
 
         async def one(title: dict) -> None:
             async with sem:
+                if self.stopped:
+                    return
                 if db.get_title(title["id"]):  # may have been merged meanwhile
                     await self.enrich_title(db, title)
                 self.status["done"] += 1
@@ -146,6 +157,8 @@ class TMDB:
             async with httpx.AsyncClient() as client:
                 self._client = client
                 for i in range(0, len(pending), 100):
+                    if self.stopped:
+                        break
                     await asyncio.gather(*(one(t) for t in pending[i:i + 100]))
         finally:
             self._client = None
