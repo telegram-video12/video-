@@ -243,6 +243,7 @@ class TelegramService:
         skip = start - aligned
         remaining = end - start + 1
         msg = await self.get_message(chat_id, msg_id)
+        first_at: float | None = time.monotonic()
         for attempt in range(2):
             try:
                 chunks = client.iter_download(msg.media, offset=aligned, request_size=CHUNK).__aiter__()
@@ -252,6 +253,11 @@ class TelegramService:
                     except StopAsyncIteration:
                         break
                     self._data_at = time.time()
+                    if first_at is not None:
+                        took = time.monotonic() - first_at
+                        if took > 5:
+                            log.warning("video: first data from Telegram took %.1f s", took)
+                        first_at = None
                     if skip:
                         chunk = chunk[skip:]
                         skip = 0

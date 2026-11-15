@@ -88,7 +88,7 @@ class AuthMiddleware:
         path = scope["path"]
         if path in PUBLIC_PATHS or path.startswith("/static/"):
             return await self.app(scope, receive, send)
-        if not path.startswith("/api/stream"):  # note slow answers in the window, to find what makes a page slow
+        if True:  # note slow answers in the window, to find what makes a page slow
             started = time.monotonic()
             inner = send
 
@@ -835,8 +835,38 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         elif scanner.tmdb:
             scanner.start_tmdb()
 
+    def watch_event_loop(loop) -> None:
+        """Diagnostics: if the site's main loop gets stuck (every page waits), print WHAT it is doing."""
+        import sys
+        import threading
+        import traceback
+
+        beat = {"t": time.monotonic()}
+
+        def tick():
+            beat["t"] = time.monotonic()
+            loop.call_later(0.5, tick)
+
+        loop.call_soon_threadsafe(tick)
+        main_id = threading.get_ident()
+
+        def watch():
+            reported = 0.0
+            while True:
+                time.sleep(1)
+                stuck = time.monotonic() - beat["t"]
+                if stuck > 2.5 and time.monotonic() - reported > 30:
+                    reported = time.monotonic()
+                    frame = sys._current_frames().get(main_id)
+                    where = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}"
+                                        for f in reversed(traceback.extract_stack(frame)[-6:])) if frame else "?"
+                    log.warning("site busy for %.1f s in: %s", stuck, where)
+
+        threading.Thread(target=watch, daemon=True, name="loop-watch").start()
+
     @asynccontextmanager
     async def lifespan(app):
+        watch_event_loop(asyncio.get_running_loop())
         try:
             await asyncio.wait_for(tg.start(), 30)
         except Exception:  # noqa: BLE001 - site still works for browsing the library
