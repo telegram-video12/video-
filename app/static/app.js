@@ -254,7 +254,7 @@ function episodeRow(m, isSeries, version, current) {
   const desc = [firstLine(m.caption) || m.file_name, fmtDur(m.duration), m.height ? m.height + 'p' : '', fmtSize(m.size)]
     .filter(Boolean).map(esc).join(' · ');
   const state = m.completed ? '<span class="badge ok">נצפה</span>'
-    : m.position > 5 ? `<span class="badge accent">עצרת ב-${fmtTime(m.position)}</span>` : '';
+    : m.position >= 10 ? `<span class="badge accent">עצרת ב-${fmtTime(m.position)}</span>` : '';
   return `<div class="ep ${current ? 'current' : ''} ${m.hidden ? 'is-hidden' : ''}">
     <a class="num" href="#/watch/${m.id}">${isSeries && m.episode != null ? m.episode : '▶'}</a>
     <a class="thumb" href="#/watch/${m.id}">${img(m.thumb)}${p ? `<div class="bar"><i style="width:${p}%"></i></div>` : ''}</a>

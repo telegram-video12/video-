@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS progress (
 """
 
 COMPLETE_RATIO = 0.92  # watched this much -> episode counts as finished
+MIN_STARTED = 10  # seconds; peeking at an episode for less than this does not count as watching it
 
 
 class Database:
@@ -276,7 +277,7 @@ class Database:
         items = self.title_media(title_id)
         if not items:
             return None
-        watched = [m for m in items if m.get("watched_at")]
+        watched = [m for m in items if m.get("watched_at") and (m["completed"] or (m["position"] or 0) >= MIN_STARTED)]
         if not watched:
             return {"media": items[0], "position": 0, "state": "start"}
         last = max(watched, key=lambda m: m["watched_at"])
@@ -291,9 +292,9 @@ class Database:
 
     def continue_watching(self, limit: int = 20) -> list[dict]:
         rows = self.q(
-            """SELECT m.title_id, MAX(p.updated_at) AS last
+            f"""SELECT m.title_id, MAX(p.updated_at) AS last
                FROM progress p JOIN media m ON m.id = p.media_id
-               WHERE m.hidden = 0
+               WHERE m.hidden = 0 AND (p.completed = 1 OR p.position >= {MIN_STARTED})
                GROUP BY m.title_id ORDER BY last DESC LIMIT ?""",
             (limit * 2,),
         )

@@ -274,3 +274,14 @@ def test_season_per_channel(client):
     # clearing the season puts them back to automatic
     client.post("/api/chats", json={"chats": [{"id": -200, "title": "סאגת אלבסטה", "enabled": True, "season": ""}]})
     assert (1, 62) in seasons() and (1, 64) in seasons()
+
+
+def test_peeking_does_not_move_resume_point(client):
+    login(client)
+    scan(client)
+    fauda = next(t for t in client.get("/api/library").json()["titles"] if t["name"] == "פאודה")
+    ep1, ep2 = client.get(f"/api/titles/{fauda['id']}").json()["media"]
+    client.post(f"/api/progress/{ep1['id']}", json={"position": 600, "duration": 1500})
+    client.post(f"/api/progress/{ep2['id']}", json={"position": 3, "duration": 1500})  # opened by mistake
+    resume = client.get(f"/api/titles/{fauda['id']}").json()["resume"]
+    assert resume["media"]["id"] == ep1["id"] and resume["position"] == 600
