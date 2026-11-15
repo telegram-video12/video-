@@ -558,3 +558,13 @@ def test_upload_named_like_tmdb_title_joins_it_and_remakes_stay_apart(client, mo
     db.x("INSERT INTO titles (kind, name, norm_name, name_key, year, created_at) VALUES ('movie','x',?,'x',2021,0)",
          (normalize("ספיידרמן אין דרך הבייתה"),))
     assert db.merge_by_name() >= 1
+
+
+def test_search_results_newest_first(client):
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "ספיידרמן 2 (2004)")), (2, vm(2, "ספיידרמן: השיבה הביתה (2017)")),
+                   (3, vm(3, "ספיידרמן (2002)")), (4, vm(4, "ספיידרמן: יום חדש (2026)")), (5, vm(5, "ספיידרמן בלי שנה"))]
+    scan(client)
+    r = client.get("/api/library?kind=movie&sort=year&q=ספיידרמן").json()["titles"]
+    assert [t["year"] for t in r] == [2026, 2017, 2004, 2002, None]   # unknown year last

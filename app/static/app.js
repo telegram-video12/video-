@@ -279,8 +279,8 @@ async function pageSearch(st) {
     if (!q) { showRecent(); return; }
     out.innerHTML = skeletonGrid();
     const [s, m] = await Promise.all([
-      api(`/api/library?kind=series&limit=30&q=${encodeURIComponent(q)}`),
-      api(`/api/library?kind=movie&limit=60&q=${encodeURIComponent(q)}`),
+      api(`/api/library?kind=series&sort=year&limit=30&q=${encodeURIComponent(q)}`),
+      api(`/api/library?kind=movie&sort=year&limit=60&q=${encodeURIComponent(q)}`),
     ]);
     if (my !== token) return;
     if (!s.total && !m.total) {
