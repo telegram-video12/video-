@@ -170,10 +170,13 @@ def migrate_norms(db: Database) -> int:
                 merged += 1
             if rows[0][1] != key:
                 conn.execute("UPDATE titles SET norm_name = ? WHERE id = ?", (key, dst))
-        for (old,) in conn.execute("SELECT DISTINCT auto_norm FROM media WHERE auto_norm IS NOT NULL").fetchall():
-            new = normalize(old) or old
+        keys: dict[str, str] = {}
+        changes = []
+        for mid, old in conn.execute("SELECT id, auto_norm FROM media WHERE auto_norm IS NOT NULL").fetchall():
+            new = keys.get(old) or keys.setdefault(old, normalize(old) or old)
             if new != old:
-                conn.execute("UPDATE media SET auto_norm = ? WHERE auto_norm = ?", (new, old))
+                changes.append((new, mid))
+        conn.executemany("UPDATE media SET auto_norm = ? WHERE id = ?", changes)  # by id: no full scans
         conn.commit()
         db.version += 1
     db.set_pref("norm_version", NORM_VERSION)

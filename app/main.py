@@ -555,21 +555,32 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if tg.authorized:
                 await scanner.scan()
 
+    async def startup_jobs() -> None:
+        """Library upkeep runs AFTER the site is up, so a big library never keeps the site from opening."""
+        from .library import migrate_norms, repair
+        scanner.status.update(running=True, chat="מסדר את הספרייה (פעם אחת אחרי עדכון)")
+        try:
+            await asyncio.to_thread(migrate_norms, db)
+            await asyncio.to_thread(repair, db)
+        except Exception:  # noqa: BLE001 - never take the site down for this
+            log.exception("library upkeep failed")
+        finally:
+            scanner.status.update(running=False, chat=None)
+        if tg.authorized:
+            await scanner.scan()  # pick up new episodes on start
+        elif scanner.tmdb:
+            scanner.start_tmdb()
+
     @asynccontextmanager
     async def lifespan(app):
-        from .library import migrate_norms, repair
-        migrate_norms(db)
-        repair(db)
         try:
-            await tg.start()
+            await asyncio.wait_for(tg.start(), 30)
         except Exception:  # noqa: BLE001 - site still works for browsing the library
             log.exception("could not connect to Telegram")
         task = asyncio.create_task(periodic_scan()) if settings.scan_interval_minutes > 0 else None
-        if tg.authorized:
-            asyncio.create_task(scanner.scan())  # pick up new episodes on start
-        elif scanner.tmdb:
-            scanner.start_tmdb()
+        jobs = asyncio.create_task(startup_jobs())
         yield
+        jobs.cancel()
         if task:
             task.cancel()
         await tg.stop()
