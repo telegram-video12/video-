@@ -157,8 +157,15 @@ class TelegramService:
         try:
             return await client.get_input_entity(chat_id)
         except ValueError:
-            # Entity not in the session cache yet: loading dialogs fills it.
-            await client.get_dialogs()
+            # Entity not in the session cache yet (e.g. a new login on another device): loading the
+            # dialogs fills it. Done ONCE, even when many posters ask at the same moment.
+            if not hasattr(self, "_dialogs_lock"):
+                self._dialogs_lock = asyncio.Lock()
+            async with self._dialogs_lock:
+                try:
+                    return await client.get_input_entity(chat_id)
+                except ValueError:
+                    await client.get_dialogs()
             return await client.get_input_entity(chat_id)
 
     async def iter_messages(self, chat_id: int, min_id: int = 0) -> AsyncIterator[tuple[int, VideoMessage | None]]:
@@ -210,11 +217,14 @@ class TelegramService:
 
     async def thumbnail(self, chat_id: int, msg_id: int) -> bytes | None:
         client = self._require()
-        msg = await self.get_message(chat_id, msg_id)
-        try:
-            data = await client.download_media(msg, file=bytes, thumb=-1)
-        except (TypeError, ValueError, IndexError):
-            return None
+        if not hasattr(self, "_thumb_sem"):  # a page of posters must not starve video streaming
+            self._thumb_sem = asyncio.Semaphore(4)
+        async with self._thumb_sem:
+            msg = await self.get_message(chat_id, msg_id)
+            try:
+                data = await client.download_media(msg, file=bytes, thumb=-1)
+            except (TypeError, ValueError, IndexError):
+                return None
         return data or None
 
 

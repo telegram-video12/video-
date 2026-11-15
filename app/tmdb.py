@@ -158,10 +158,10 @@ class TMDB:
         if other:
             src, dst = max(other["id"], title["id"]), min(other["id"], title["id"])
             if db.get_title(src) and db.get_title(dst):
-                db.merge_titles(src, dst)
+                db.merge_titles(src, dst, soft=True)
         from .parser import normalize
 
-        db.merge_by_name(normalize(meta["tmdb_name"] or ""))  # entries whose name matches this TMDB name
+        db.merge_by_name(normalize(meta["tmdb_name"] or ""), soft=True)  # entries whose name matches this TMDB name
         return True
 
     async def enrich_pending(self, db, concurrency: int = 12) -> None:

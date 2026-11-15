@@ -237,7 +237,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
             page.append(t)
         out = {"titles": page, "total": len(items), "counts": counts, "offset": offset}
-        if offset == 0 and not q:
+        if offset == 0 and not q and not qp.get("nocont"):
             out["continue"] = [
                 {
                     "title": {k: c["title"][k] for k in ("id", "name", "kind", "backdrop", "poster")},

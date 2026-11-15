@@ -239,7 +239,7 @@ class Database:
         taken = conn.execute("SELECT 1 FROM titles WHERE kind = ? AND norm_name = ?", (kind, norm_name)).fetchone()
         return f"{norm_name}#{year}" if taken and year else norm_name
 
-    def merge_by_name(self, name_key: str | None = None) -> int:
+    def merge_by_name(self, name_key: str | None = None, soft: bool = False) -> int:
         """Merge a title without TMDB info into a TMDB title whose name gives the same key
         ("ספיידרמן אין דרך הבייתה" -> "ספיידרמן: אין דרך הביתה")."""
         pairs = self.q(
@@ -253,7 +253,7 @@ class Database:
         )
         for p in pairs:
             if self.get_title(p["src"]) and self.get_title(p["dst"]):
-                self.merge_titles(p["src"], p["dst"])
+                self.merge_titles(p["src"], p["dst"], soft=soft)
         return len(pairs)
 
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
@@ -269,12 +269,17 @@ class Database:
         sets = ", ".join(f"{k} = ?" for k in fields)
         self.x(f"UPDATE titles SET {sets} WHERE id = ?", (*fields.values(), title_id), soft=soft)
 
-    def merge_titles(self, source_id: int, target_id: int) -> None:
+    def merge_titles(self, source_id: int, target_id: int, soft: bool = False) -> None:
+        """soft: a background merge (TMDB) - the library list refreshes within 20s instead of at once,
+        so thousands of background merges do not rebuild the list on every page load."""
         with self._lock:
             self.conn.execute("UPDATE media SET title_id = ? WHERE title_id = ?", (target_id, source_id))
             self.conn.execute("DELETE FROM titles WHERE id = ?", (source_id,))
             self.conn.commit()
-            self.version += 1
+            if soft:
+                self.soft_version += 1
+            else:
+                self.version += 1
 
     def orphan_media(self) -> list[dict]:
         """Videos whose title row is missing (should not happen; repaired at start-up)."""
@@ -298,7 +303,7 @@ class Database:
         """Cached list_titles(): recomputed only after something changed."""
         c = self._titles_cache
         if (not c or c[0] != self.version
-                or (c[1] != self.soft_version and time.time() - c[2] > 20)):
+                or (c[1] != self.soft_version and time.time() - c[2] > 10)):
             from .parser import normalize
 
             rows = self.list_titles()

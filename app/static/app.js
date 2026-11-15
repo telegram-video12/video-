@@ -113,8 +113,8 @@ async function pageHome() {
   if (!libraryCache) $app.innerHTML = pageHeader('', '', {logo: true}) + skeletonRows();
   const [all, series, movies] = await Promise.all([
     api('/api/library?limit=20'),
-    api('/api/library?kind=series&limit=20'),
-    api('/api/library?kind=movie&limit=20'),
+    api('/api/library?kind=series&limit=20&nocont=1'),
+    api('/api/library?kind=movie&limit=20&nocont=1'),
   ]);
   libraryCache = all;
   if (!all.counts.all) { $app.innerHTML = pageHeader('', '', {logo: true}) + emptyLibrary(); return; }
@@ -212,7 +212,7 @@ async function pageList(kind, st) {
     : [['all', 'הכל'], ['watching', 'באמצע'], ['new', 'לא ראיתי'], ['done', 'ראיתי']];
   // "באמצע" is most useful sorted by what you watched last, unless you picked another order
   const sortOf = () => f.sort || (f.state === 'watching' ? 'watched' : 'added');
-  const query = (offset, limit) => `/api/library?kind=${kind}&state=${f.state}&decade=${f.decade}&genres=${encodeURIComponent((f.genres || []).join(','))}&sort=${sortOf()}&offset=${offset}&limit=${limit}`;
+  const query = (offset, limit) => `/api/library?kind=${kind}&state=${f.state}&decade=${f.decade}&genres=${encodeURIComponent((f.genres || []).join(','))}&sort=${sortOf()}&offset=${offset}&limit=${limit}&nocont=1`;
   const label = (list, v) => (list.find(([k]) => k === v) || list[0])[1];
 
   const shell = (sub, body) => pageHeader(title, sub) + `
@@ -327,7 +327,7 @@ async function pageSearch(st) {
     if (!q) { showRecent(); return; }
     out.innerHTML = skeletonGrid();
     const [s, m] = await Promise.all([
-      api(`/api/library?kind=series&sort=year&limit=30&q=${encodeURIComponent(q)}`),
+      api(`/api/library?kind=series&sort=year&limit=30&nocont=1&q=${encodeURIComponent(q)}`),
       api(`/api/library?kind=movie&sort=year&limit=60&q=${encodeURIComponent(q)}`),
     ]);
     if (my !== token) return;

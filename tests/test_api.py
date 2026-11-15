@@ -343,6 +343,7 @@ def test_tmdb_merges_same_movie_with_different_names(client, monkeypatch):
         return {"tmdb_id": 27205, "tmdb_name": "התחלה", "overview": "...", "poster": None, "backdrop": None, "year": 2010}
     monkeypatch.setattr(TMDB, "lookup", lookup)
     asyncio.run(TMDB("k").enrich_pending(db))
+    db._titles_cache = None  # background merges show within seconds; skip the wait in the test
     titles = client.get("/api/library").json()["titles"]
     assert len(titles) == 1 and titles[0]["name"] == "התחלה" and titles[0]["media_count"] == 1
 
