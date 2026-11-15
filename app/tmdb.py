@@ -48,6 +48,23 @@ class TMDB:
             return _Shared()
         return httpx.AsyncClient()
 
+    async def _search_trimmed(self, client, media_type: str, name: str, year: int) -> list:
+        """Last resort for names with leftover junk ("קינג סרט ספיידרמן 3"): drop a few words from the
+        start or end and search again. Only accepted when the release year matches, to avoid wrong hits."""
+        words = name.split()
+        variants = [words[i:] for i in (1, 2, 3)] + [words[:-i] for i in (1, 2)]
+        for v in variants:
+            if not v or len("".join(v)) < 3 or not any(ch.isalpha() for ch in "".join(v)):
+                continue
+            params = {"query": " ".join(v), "language": "he-IL"}
+            params["first_air_date_year" if media_type == "tv" else "year"] = year
+            res = (await self._get(client, f"/search/{media_type}", **params)).get("results") or []
+            for item in res:
+                date = item.get("first_air_date") or item.get("release_date") or ""
+                if date[:4].isdigit() and abs(int(date[:4]) - year) <= 1:
+                    return [item]
+        return []
+
     async def lookup(self, kind: str, name: str, year: int | None = None, tmdb_id: int | None = None) -> dict | None:
         media_type = "tv" if kind == "series" else "movie"
         async with self._client_ctx() as client:
@@ -62,6 +79,8 @@ class TMDB:
                     params.pop("first_air_date_year", None)
                     params.pop("year", None)
                     res = (await self._get(client, f"/search/{media_type}", **params)).get("results") or []
+                if not res and year:
+                    res = await self._search_trimmed(client, media_type, name, year)
                 if not res:
                     return None
                 item = res[0]

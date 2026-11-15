@@ -212,10 +212,10 @@ class Scanner:
     """Walks enabled chats and adds new videos to the library."""
 
     def __init__(self, db, tg: TelegramService, tmdb, min_duration: int):
-        from .library import add_video, regroup_chat  # local import to avoid a cycle
+        from .library import add_video, regroup_all  # local import to avoid a cycle
 
         self._add_video = add_video
-        self._regroup = regroup_chat
+        self._regroup_all = regroup_all
         self.db = db
         self.tg = tg
         self.tmdb = tmdb
@@ -233,6 +233,9 @@ class Scanner:
             return self.status
         async with self._lock:
             self.status = {"running": True, "chat": None, "added": 0, "last_finished": self.status.get("last_finished"), "error": None}
+            from .branding import VERSION as BRANDING_VERSION
+            changed = (any(c.get("branding") is None for c in self.db.chats(enabled_only=True))
+                       or self.db.get_pref("branding_version") != BRANDING_VERSION)
             try:
                 for chat in self.db.chats(enabled_only=True):
                     if chat_ids and chat["id"] not in chat_ids:
@@ -249,9 +252,12 @@ class Scanner:
                             self.db.set_chat_scanned(chat["id"], last_seen)
                     self.db.set_chat_scanned(chat["id"], last_seen)
                     log.info("scanned chat %s: %d messages checked", chat["id"], count)
-                    if count or chat.get("branding") is None:
-                        self.status["chat"] = chat["title"] + " (מסדר שמות)"
-                        await asyncio.to_thread(self._regroup, self.db, chat["id"])
+                    if count:
+                        changed = True
+                if changed:  # learn channel signatures and re-file names (see branding.py)
+                    self.status["chat"] = "מסדר שמות"
+                    await asyncio.to_thread(self._regroup_all, self.db)
+                    self.db.set_pref("branding_version", BRANDING_VERSION)
                 if self.tmdb:  # posters are fetched in the background; scanning is not held up
                     self.start_tmdb()
             except Exception as e:  # noqa: BLE001 - surface any error in the UI

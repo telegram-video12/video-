@@ -418,6 +418,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "scan": scanner.status,
             "chats": db.chats(),
             "scan_interval_minutes": settings.scan_interval_minutes,
+            "strip_phrases": db.strip_phrases(),
         })
 
     async def save_settings(request: Request):
@@ -429,6 +430,18 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if key:  # look up titles that were added before the key existed
                 db.x("UPDATE titles SET tmdb_checked = 0 WHERE tmdb_id IS NULL")
                 scanner.start_tmdb()
+        if "strip_phrases" in payload:
+            raw = str(payload["strip_phrases"] or "")
+            phrases = [p.strip() for p in re.split(r"[\n,]+", raw) if p.strip()]
+            db.set_pref("strip_phrases", "\n".join(phrases))
+            from .library import regroup_all
+
+            async def regroup() -> None:
+                scanner.status["chat"] = "מסדר שמות"
+                await asyncio.to_thread(regroup_all, db)
+                scanner.status["chat"] = None
+                scanner.start_tmdb()
+            asyncio.create_task(regroup())
         if "api_id" in payload or "api_hash" in payload:
             api_id = re.sub(r"\D", "", str(payload.get("api_id") or ""))
             api_hash = str(payload.get("api_hash") or "").strip()

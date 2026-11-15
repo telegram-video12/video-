@@ -383,7 +383,7 @@ def test_channel_signatures_are_removed(client):
         -3: lambda n, i: f"🎬 חנואל סרטים 🎬\n{n} 1080p",
         -4: lambda n, i: f"{n} 720p",
     }
-    msgs = {cid: [(i + 1, VideoMessage(cid, i + 1, fmt(n, i), "", len(FILE), "video/mp4", 6000, None, None, 1000 + i))
+    msgs = {cid: [(i + 1, VideoMessage(cid, i + 1, fmt(n, i), "", len(FILE), "video/mp4", 5000 + i * 97, None, None, 1000 + i))
                   for i, n in enumerate(MOVIES)] for cid, fmt in chats.items()}
 
     async def iter_messages(chat_id, min_id=0):
@@ -404,8 +404,62 @@ def test_channel_signatures_are_removed(client):
         assert detail["media"][0]["quality"] == 1080          # the 1080p upload is the one that plays
     assert "הארי פוטר ואבן החכמים" in names                  # a real shared word is not a signature
     # a later upload in the same channel is cleaned right away
-    msgs[-1].append((100, VideoMessage(-1, 100, "קינג סרט טיטאניק 4K", "", len(FILE), "video/mp4", 6000, None, None, 5000)))
+    msgs[-1].append((100, VideoMessage(-1, 100, "קינג סרט טיטאניק 4K", "", len(FILE), "video/mp4", 5000 + 8 * 97, None, None, 5000)))
     asyncio.run(client.app.state.scanner.scan())
     titanic = client.get("/api/library?q=טיטאניק").json()["titles"]
     assert len(titanic) == 1
     assert client.get(f"/api/titles/{titanic[0]['id']}").json()["media"][0]["quality"] == 2160
+
+
+def _many_movies(n):
+    """n distinct, realistic-looking movie names."""
+    a = ["האביר", "המסע", "הבית", "סוד", "לילה", "אהבה", "מלחמת", "הים", "השומר", "המלך", "חלום", "הדרך"]
+    b = ["האחרון", "הגדול", "בפריז", "של ג'ון", "השחור", "הנסתר", "בלב", "הלבן", "מהעבר", "בצפון", "הזהב", "הקטן"]
+    c = ["", " 2", " 3", " החדש", " הסוף", " הנקמה", " השני", " ההתחלה"]
+    out = []
+    for i in range(n):
+        out.append(f"{a[i % 12]} {b[(i // 12) % 12]}{c[(i // 144) % 8]}")
+    return list(dict.fromkeys(out))
+
+
+def test_big_archive_channel_mixing_many_signatures(client):
+    """One huge 'archive' channel that re-posts from many sources, each with its own signature."""
+    import asyncio
+    login(client)
+    tg = client.app.state.tg
+    names = _many_movies(1100)
+    sigs = [lambda n: f"קינג סרט {n}", lambda n: f"מדיה VOD {n} הועלה ע\"י יחיאל", lambda n: f"פופקורן טיים {n}",
+            lambda n: f"ק.ס {n}", lambda n: f"{n} דב ס", lambda n: f"{n}"]
+    msgs, mid = [], 0
+    for i, n in enumerate(names):
+        for k in range(1 + i % 3):  # 1-3 uploads of each movie from different sources
+            mid += 1
+            msgs.append((mid, VideoMessage(-100, mid, sigs[(i + k) % len(sigs)](n), "", len(FILE), "video/mp4", 4000 + i * 11, None, None, mid)))
+    # a franchise appearing many times must keep its name
+    for j, part in enumerate(["", " 2", " 3", ": השיבה הביתה", ": רחוק מהבית", ": אין דרך הביתה"] * 3):
+        mid += 1
+        msgs.append((mid, VideoMessage(-100, mid, sigs[j % 6](f"ספיידרמן{part}"), "", len(FILE), "video/mp4", 20000 + (j % 6) * 400, None, None, mid)))
+    tg.messages = msgs
+    scan(client)
+    lib = client.get("/api/library?limit=1").json()
+    assert lib["total"] == len(names) + 6
+    spider = client.get("/api/library?q=ספיידרמן&limit=50").json()
+    assert sorted(t["name"] for t in spider["titles"]) == sorted(
+        ["ספיידרמן", "ספיידרמן 2", "ספיידרמן 3", "ספיידרמן: השיבה הביתה", "ספיידרמן: רחוק מהבית", "ספיידרמן: אין דרך הביתה"])
+
+
+def test_manual_strip_phrases(client):
+    import time
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "שקד הפקות טיטאניק (1997)")), (2, vm(2, "טיטאניק (1997) 1080p"))]
+    scan(client)
+    assert client.get("/api/library").json()["total"] == 2   # too few movies to learn the signature
+    client.post("/api/settings", json={"strip_phrases": "שקד הפקות\n"})
+    for _ in range(50):
+        if client.get("/api/library").json()["total"] == 1:
+            break
+        time.sleep(0.1)
+    lib = client.get("/api/library").json()
+    assert lib["total"] == 1 and lib["titles"][0]["name"] == "טיטאניק"
+    assert client.get("/api/status").json()["strip_phrases"] == ["שקד הפקות"]

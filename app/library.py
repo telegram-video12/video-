@@ -13,11 +13,20 @@ log = logging.getLogger(__name__)
 MIN_UNKNOWN_DURATION_SIZE = 50 * 1024 * 1024  # files without duration: keep only if >= 50MB
 
 
-def chat_branding(chat: dict) -> dict | None:
+def _stored(chat: dict) -> dict | None:
     try:
         return json.loads(chat.get("branding") or "null")
     except ValueError:
         return None
+
+
+def chat_branding(chat: dict, db: Database | None = None) -> dict | None:
+    """Signature removed from this channel's names: learned automatically + your phrases from Settings."""
+    auto = _stored(chat)
+    phrases = db.strip_phrases() if db is not None else []
+    if not auto and not phrases:
+        return None
+    return brand.combine(auto, phrases)
 
 
 def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
@@ -30,7 +39,7 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
             return False
     if isinstance(chat, str):
         chat = {"title": chat}
-    info = parse_media(v.caption, v.file_name, fallback_name=chat.get("title", ""), branding=chat_branding(chat))
+    info = parse_media(v.caption, v.file_name, fallback_name=chat.get("title", ""), branding=chat_branding(chat, db))
     if info.kind == "series" and not info.season_explicit and chat.get("default_season"):
         info.season = chat["default_season"]
     title_id = db.get_or_create_title(info.kind, info.name, normalize(info.name) or info.name, info.year)
@@ -54,7 +63,11 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
     return new_id is not None
 
 
-def regroup_chat(db: Database, chat_id: int) -> int:
+def _corpus(db: Database) -> list:
+    return [(r["caption"], r["duration"]) for r in db.q("SELECT caption, duration FROM media")]
+
+
+def regroup_chat(db: Database, chat_id: int, corpus: list | None = None) -> int:
     """Learn the channel's signature from all its captions and re-file its videos under clean names.
 
     Only videos that still sit where the automatic parser put them are moved, so manual
@@ -63,10 +76,12 @@ def regroup_chat(db: Database, chat_id: int) -> int:
     chat = db.get_chat(chat_id)
     if not chat:
         return 0
-    rows = db.q("SELECT m.id, m.caption, m.file_name, m.manual, t.kind, t.norm_name FROM media m "
+    rows = db.q("SELECT m.id, m.caption, m.file_name, m.manual, m.duration, t.kind, t.norm_name FROM media m "
                 "JOIN titles t ON t.id = m.title_id WHERE m.chat_id = ?", (chat_id,))
-    old = chat_branding(chat)
-    new = brand.detect([r["caption"] for r in rows])
+    old = _stored(chat)  # what was used last time (auto + phrases)
+    if corpus is None:
+        corpus = _corpus(db)
+    new = brand.combine(brand.detect([(r["caption"], r["duration"]) for r in rows], corpus), db.strip_phrases())
     db.x("UPDATE chats SET branding = ? WHERE id = ?", (json.dumps(new, ensure_ascii=False), chat_id))
     if new == old:
         return 0
@@ -103,3 +118,9 @@ def regroup_chat(db: Database, chat_id: int) -> int:
         db.version += 1
     log.info("chat %s: %d videos re-filed under clean names (%.1fs)", chat_id, len(moves), time.time() - started)
     return len(moves)
+
+
+def regroup_all(db: Database) -> int:
+    """Re-learn every channel's signature (the whole library is used to confirm them)."""
+    corpus = _corpus(db)
+    return sum(regroup_chat(db, c["id"], corpus) for c in db.chats())

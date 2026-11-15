@@ -560,6 +560,11 @@ async function pageSettings() {
       </div>
       <p class="muted" style="font-size:13px;margin-bottom:0">כל עוד האתר פועל, הוא סורק לבד ${st.scan_interval_minutes ? `כל ${st.scan_interval_minutes} דקות` : ''} ובכל הפעלה. סריקה מלאה לא מוחקת עריכות שעשית.</p>
     </div>
+    <div class="panel"><h3>ניקוי שמות</h3>
+      <p class="muted" style="margin-top:0">האתר מזהה לבד חתימות של קבוצות (כמו "קינג סרט") ומוחק אותן משמות הסרטים, כדי שכל סרט יופיע פעם אחת. אם נשארה חתימה, כתוב אותה כאן, <b>שורה לכל ביטוי</b>, והיא תימחק מכל השמות.</p>
+      <textarea class="input" id="strip-phrases" rows="5" style="width:100%;resize:vertical" placeholder="קינג סרט&#10;מדיה VOD&#10;פופקורן טיים">${esc((st.strip_phrases || []).join('\n'))}</textarea>
+      <button class="btn" id="save-phrases" style="margin-top:8px">שמור וסדר מחדש</button>
+    </div>
     <div class="panel"><h3>פוסטרים ותקצירים (רשות)</h3>
       <p class="muted" style="margin-top:0">${st.tmdb ? '✓ פעיל.' + (st.tmdb_status?.running ? ` ⏳ מוריד פוסטרים ותקצירים: ${st.tmdb_status.done.toLocaleString('he-IL')} מתוך ${st.tmdb_status.total.toLocaleString('he-IL')} (ממשיך ברקע)` : '') : 'כדי לקבל פוסטרים ותקצירים בעברית, הירשם בחינם ל-<a class="link" href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">TMDB</a>, ואז ב-<a class="link" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">הגדרות ← API</a> העתק את ה-<b>API Key</b>.'}</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -620,6 +625,11 @@ async function pageSettings() {
     await api('/api/settings', {method: 'POST', body: {tmdb_api_key: $('#tmdb-key').value.trim()}});
     if (auth) await api('/api/scan', {method: 'POST', body: {}});
     pageSettings();
+  });
+  $('#save-phrases').onclick = () => run(async () => {
+    await api('/api/settings', {method: 'POST', body: {strip_phrases: $('#strip-phrases').value}});
+    libraryCache = null;
+    alert('נשמר! השמות מסודרים מחדש ברקע. בעוד דקה-שתיים זה יופיע בספרייה.');
   });
   $('#change-pw').onclick = () => run(async () => {
     await api('/api/password', {method: 'POST', body: {current: $('#pw-cur').value, new: $('#pw-new').value}});

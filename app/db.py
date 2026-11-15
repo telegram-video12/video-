@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS media (
 );
 CREATE INDEX IF NOT EXISTS media_title ON media(title_id, season, episode);
 
+CREATE TABLE IF NOT EXISTS prefs (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE TABLE IF NOT EXISTS progress (
     media_id   INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
     position   REAL NOT NULL DEFAULT 0,
@@ -113,6 +118,19 @@ class Database:
             else:
                 self.version += 1
             return cur.lastrowid
+
+    # ------------------------------------------------------------------ prefs
+    def get_pref(self, key: str, default: str = "") -> str:
+        row = self.q1("SELECT value FROM prefs WHERE key = ?", (key,))
+        return row["value"] if row and row["value"] is not None else default
+
+    def set_pref(self, key: str, value: str) -> None:
+        self.x("INSERT INTO prefs (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+               (key, value))
+
+    def strip_phrases(self) -> list[str]:
+        """Words/phrases you asked to remove from every name (Settings)."""
+        return [p.strip() for p in self.get_pref("strip_phrases").splitlines() if p.strip()]
 
     # ------------------------------------------------------------------ chats
     def upsert_chat(self, chat_id: int, title: str, enabled: bool,
