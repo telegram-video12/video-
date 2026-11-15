@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import hmac
 import logging
 import re
@@ -197,8 +198,11 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         offset = max(0, int(qp.get("offset", 0) or 0))
         limit = min(200, max(1, int(qp.get("limit", 60) or 60)))
         items = db.library_titles()
-        if q:
-            items = [t for t in items if q in normalize(t["name"])]
+        if q:  # Hebrew name or the original (TMDB) name: "Spider" finds "ספיידרמן"
+            items = [t for t in items if q in t["_key"] or (t["_okey"] and q in t["_okey"])]
+        genres = [g for g in qp.get("genres", "").split(",") if g]
+        if genres:  # any of the chosen genres
+            items = [t for t in items if any(g in t["genres"] for g in genres)]
         state = qp.get("state", "all")
         if state != "all":
             def watch_state(t):
@@ -218,13 +222,15 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             items = sorted(items, key=lambda t: (not re.match(r"[א-ת]", t["name"] or ""), (t["name"] or "").lower()))
         elif sort == "year":
             items = sorted(items, key=lambda t: t["year"] or 0, reverse=True)
+        elif sort == "rating":
+            items = sorted(items, key=lambda t: t["rating"] or 0, reverse=True)
         counts = {"all": len(items), "series": sum(1 for t in items if t["kind"] == "series")}
         counts["movie"] = counts["all"] - counts["series"]
         if kind in ("series", "movie"):
             items = [t for t in items if t["kind"] == kind]
         page = []
         for t in items[offset:offset + limit]:
-            t = dict(t)
+            t = {k: v for k, v in t.items() if not k.startswith("_")}
             t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
             page.append(t)
         out = {"titles": page, "total": len(items), "counts": counts, "offset": offset}
@@ -239,6 +245,27 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                 for c in db.continue_watching()
             ]
         return ok(out)
+
+    async def genres_list(request: Request):
+        """Genres in the library with how many titles have each: ?kind=series|movie"""
+        kind = request.query_params.get("kind", "")
+        counts: dict[str, int] = {}
+        for t in db.library_titles():
+            if kind in ("series", "movie") and t["kind"] != kind:
+                continue
+            for g in t["genres"]:
+                counts[g] = counts.get(g, 0) + 1
+        return ok([{"name": g, "count": n} for g, n in sorted(counts.items(), key=lambda x: -x[1])])
+
+    async def watched_many(request: Request):
+        """Mark several episodes at once (a whole season, or 'up to here'). Returns their previous state for undo."""
+        data = await body(request)
+        ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()][:2000]
+        watched = bool(data.get("watched"))
+        before = {m["id"]: bool(m["completed"]) for m in (db.get_media(i) for i in ids) if m}
+        for i in before:
+            db.mark_watched(i, watched)
+        return ok({"ok": True, "before": before})
 
     async def title_detail(request: Request):
         title_id = request.path_params["id"]
@@ -262,6 +289,13 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if not t["poster"] and items:
             t["poster"] = items[0]["thumb"]
         resume = db.resume_point(title_id)
+        t = dict(t)
+        for k, default in (("genres", []), ("cast_json", [])):
+            try:
+                t[k] = json.loads(t.get(k) or "null") or default
+            except ValueError:
+                t[k] = default
+        t["cast"] = t.pop("cast_json")
         return ok({
             "title": t,
             "season_labels": db.season_labels(title_id),
@@ -621,7 +655,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/setup-state", setup_state), R("/api/setup", setup, methods=["POST"]),
         R("/api/login", login, methods=["POST"]), R("/api/logout", logout, methods=["POST"]),
         R("/api/password", change_password, methods=["POST"]),
-        R("/api/library", library),
+        R("/api/library", library), R("/api/genres", genres_list),
+        R("/api/watched-many", watched_many, methods=["POST"]),
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),
         R("/api/titles/{id:int}/merge", merge_title, methods=["POST"]),
         R("/api/media/{id:int}", media_detail), R("/api/media/{id:int}", edit_media, methods=["PATCH"]),

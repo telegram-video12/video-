@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import httpx
@@ -85,18 +86,31 @@ class TMDB:
                 if not res:
                     return None
                 item = res[0]
+            # one details call gives genres, rating, length and cast (credits) in Hebrew
+            det = await self._get(client, f"/{media_type}/{item['id']}", language="he-IL",
+                                  append_to_response="credits")
+            item = {**item, **det}
             overview = item.get("overview")
             if not overview:
                 en = await self._get(client, f"/{media_type}/{item['id']}", language="en-US")
                 overview = en.get("overview")
         date = item.get("first_air_date") or item.get("release_date") or ""
+        runtime = item.get("runtime") or next(iter(item.get("episode_run_time") or []), None)
+        cast = [{"name": c.get("name"), "photo": IMG + "w185" + c["profile_path"] if c.get("profile_path") else None}
+                for c in ((item.get("credits") or {}).get("cast") or [])[:10] if c.get("name")]
+        votes = item.get("vote_count") or 0
         return {
             "tmdb_id": item["id"],
             "tmdb_name": item.get("name") or item.get("title"),
+            "original_name": item.get("original_name") or item.get("original_title"),
             "overview": overview,
             "poster": IMG + "w342" + item["poster_path"] if item.get("poster_path") else None,
             "backdrop": IMG + "w1280" + item["backdrop_path"] if item.get("backdrop_path") else None,
             "year": int(date[:4]) if date[:4].isdigit() else None,
+            "genres": [g["name"] for g in item.get("genres") or [] if g.get("name")],
+            "rating": round(float(item["vote_average"]), 1) if item.get("vote_average") and votes >= 5 else None,
+            "runtime": int(runtime) if runtime else None,
+            "cast": cast,
         }
 
     async def enrich_title(self, db, title: dict, tmdb_id: int | None = None) -> bool:
@@ -126,6 +140,12 @@ class TMDB:
             poster=meta["poster"],
             backdrop=meta["backdrop"],
             year=meta["year"] or title.get("year"),
+            original_name=meta.get("original_name"),
+            genres=json.dumps(meta.get("genres") or [], ensure_ascii=False),
+            rating=meta.get("rating"),
+            runtime=meta.get("runtime"),
+            cast_json=json.dumps(meta.get("cast") or [], ensure_ascii=False),
+            tmdb_details=1,
         )
         # The same movie/series under another name (e.g. Hebrew vs English caption) -> one entry.
         # Always merge the newer entry into the older one so concurrent lookups agree.
@@ -153,7 +173,7 @@ class TMDB:
                 if self.stopped:
                     return
                 if db.get_title(title["id"]):  # may have been merged meanwhile
-                    await self.enrich_title(db, title)
+                    await self.enrich_title(db, title, tmdb_id=title.get("tmdb_id"))
                 self.status["done"] += 1
 
         try:

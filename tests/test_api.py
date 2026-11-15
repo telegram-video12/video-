@@ -568,3 +568,44 @@ def test_search_results_newest_first(client):
     scan(client)
     r = client.get("/api/library?kind=movie&sort=year&q=ספיידרמן").json()["titles"]
     assert [t["year"] for t in r] == [2026, 2017, 2004, 2002, None]   # unknown year last
+
+
+def test_tmdb_details_genres_rating_cast_and_season_marking(client, monkeypatch):
+    import asyncio
+    from app.tmdb import TMDB
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "התחלה (2010)")), (2, vm(2, "שרק (2001)")), (3, vm(3, "נארוטו עונה 1 פרק 1")),
+                   (4, vm(4, "נארוטו עונה 1 פרק 2")), (5, vm(5, "נארוטו עונה 1 פרק 3"))]
+    scan(client)
+    data = {"התחלה": ("Inception", ["מדע בדיוני", "אקשן"], 8.4), "שרק": ("Shrek", ["אנימציה", "קומדיה"], 7.7),
+            "נארוטו": ("NARUTO", ["אנימציה", "אקשן"], 8.0)}
+
+    async def lookup(self, kind, name, year=None, tmdb_id=None):
+        orig, genres, rating = data[name]
+        return {"tmdb_id": abs(hash(name)) % 9999, "tmdb_name": name, "original_name": orig, "overview": "...",
+                "poster": None, "backdrop": None, "year": year, "genres": genres, "rating": rating, "runtime": 100,
+                "cast": [{"name": "שחקן א", "photo": None}]}
+    monkeypatch.setattr(TMDB, "lookup", lookup)
+    asyncio.run(TMDB("k").enrich_pending(client.app.state.db))
+    lib = lambda qs: [t["name"] for t in client.get("/api/library?limit=50&" + qs).json()["titles"]]
+    assert lib("kind=movie&sort=rating") == ["התחלה", "שרק"]
+    assert sorted(lib("genres=אנימציה")) == sorted(["שרק", "נארוטו"])
+    assert lib("kind=movie&genres=אקשן,קומדיה&sort=rating") == ["התחלה", "שרק"]
+    assert lib("q=shrek") == ["שרק"]                                  # original (English) name finds it
+    g = {x["name"]: x["count"] for x in client.get("/api/genres?kind=movie").json()}
+    assert g["אקשן"] == 1 and g["אנימציה"] == 1 and "מדע בדיוני" in g
+    naruto = next(t for t in client.get("/api/library?kind=series").json()["titles"])
+    detail = client.get(f"/api/titles/{naruto['id']}").json()
+    assert detail["title"]["genres"] == ["אנימציה", "אקשן"] and detail["title"]["cast"][0]["name"] == "שחקן א"
+    assert detail["title"]["rating"] == 8.0 and detail["title"]["original_name"] == "NARUTO"
+    ids = [m["id"] for m in detail["media"]]
+    r = client.post("/api/watched-many", json={"ids": ids, "watched": True}).json()
+    assert r["before"] == {str(i): False for i in ids} or all(v is False for v in r["before"].values())
+    assert all(m["completed"] for m in client.get(f"/api/titles/{naruto['id']}").json()["media"])
+    client.post("/api/watched-many", json={"ids": ids, "watched": False})
+    assert not any(m["completed"] for m in client.get(f"/api/titles/{naruto['id']}").json()["media"])
+    # titles matched before details existed get them on the next run
+    db = client.app.state.db
+    db.x("UPDATE titles SET tmdb_details = 0, genres = NULL")
+    assert len(db.titles_needing_tmdb()) == 3

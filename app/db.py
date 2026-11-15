@@ -1,6 +1,7 @@
 """SQLite storage: chats, titles (series/movies), media files and watch progress."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -104,6 +105,10 @@ class Database:
             rows = self.conn.execute("SELECT id, name FROM titles").fetchall()
             self.conn.executemany("UPDATE titles SET name_key = ? WHERE id = ?",
                                   [(normalize(r[1] or ""), r[0]) for r in rows])
+        for col, typ in (("genres", "TEXT"), ("rating", "REAL"), ("runtime", "INTEGER"), ("cast_json", "TEXT"),
+                         ("original_name", "TEXT"), ("tmdb_details", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in tcols:  # TMDB details (genres, rating, length, cast)
+                self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_norm ON titles(norm_name)")
         mcols = {r[1] for r in self.conn.execute("PRAGMA table_info(media)")}
@@ -252,7 +257,8 @@ class Database:
         return len(pairs)
 
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
-        allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked"}
+        allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked",
+                   "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -284,7 +290,7 @@ class Database:
                LEFT JOIN (SELECT m.title_id, MAX(p.updated_at) AS w, MAX(m.added_at) AS a
                           FROM media m LEFT JOIN progress p ON p.media_id = m.id GROUP BY m.title_id) x
                  ON x.title_id = t.id
-               WHERE t.tmdb_checked = 0
+               WHERE t.tmdb_checked = 0 OR (t.tmdb_id IS NOT NULL AND t.tmdb_details = 0)
                ORDER BY x.w IS NULL, x.w DESC, x.a DESC"""
         )
 
@@ -293,13 +299,23 @@ class Database:
         c = self._titles_cache
         if (not c or c[0] != self.version
                 or (c[1] != self.soft_version and time.time() - c[2] > 20)):
-            self._titles_cache = c = (self.version, self.soft_version, time.time(), self.list_titles())
+            from .parser import normalize
+
+            rows = self.list_titles()
+            for t in rows:  # search keys and parsed genres, computed once per change
+                t["_key"] = normalize(t["name"] or "")
+                t["_okey"] = normalize(t["original_name"] or "")
+                try:
+                    t["genres"] = json.loads(t["genres"] or "[]")
+                except ValueError:
+                    t["genres"] = []
+            self._titles_cache = c = (self.version, self.soft_version, time.time(), rows)
         return c[3]
 
     def list_titles(self) -> list[dict]:
         return self.q(
             f"""
-            SELECT t.id, t.kind, t.name, t.year, t.poster, t.overview,
+            SELECT t.id, t.kind, t.name, t.year, t.poster, t.overview, t.genres, t.rating, t.original_name,
                    COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,
                    MAX(m.added_at) AS last_added,

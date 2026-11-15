@@ -137,13 +137,52 @@ function skeletonGrid() {
   return `<div class="pgrid">${Array.from({length: 9}, () => '<div class="poster-card"><div class="poster sk"></div></div>').join('')}</div>`;
 }
 
+function undoToast(text, onUndo, ms = 5000) {
+  document.querySelector('.undo-toast')?.remove();
+  const el = document.createElement('div');
+  el.className = 'undo-toast';
+  el.innerHTML = `<span>${esc(text)}</span><button>בטל</button>`;
+  const timer = setTimeout(() => el.remove(), ms);
+  el.querySelector('button').onclick = () => { clearTimeout(timer); el.remove(); onUndo(); };
+  document.body.appendChild(el);
+}
+
 // ------------------------------------------------------------ series / movies
 const store = {  // localStorage can be missing (private mode): never let it break the page
   get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (_) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} },
 };
 const DECADES = [['', 'כל השנים'], ['2020', '2020 ומעלה'], ['2010', '2010–2019'], ['2000', '2000–2009'], ['1990', '1990–1999'], ['old', 'לפני 1990']];
-const SORTS = [['added', 'נוסף לאחרונה'], ['watched', 'נצפה לאחרונה'], ['name', 'א–ת'], ['year', 'שנה (חדש קודם)']];
+const SORTS = [['added', 'נוסף לאחרונה'], ['watched', 'נצפה לאחרונה'], ['name', 'א–ת'], ['year', 'שנה (חדש קודם)'], ['rating', 'דירוג (גבוה קודם)']];
+
+function multiSheet(title, options, chosen) {
+  // options: [[value, label]]; returns the new list, or null when closed without "החל"
+  return new Promise((resolve) => {
+    const picked = new Set(chosen);
+    const el = document.createElement('div');
+    el.className = 'sheet-wrap';
+    el.innerHTML = `<div class="sheet"><div class="sheet-grip"></div>
+      <div class="sheet-head"><h3>${esc(title)}</h3><button class="linkbtn" data-clear>נקה</button></div>
+      <div class="sheet-list">${options.map(([v, l]) => `<button class="sheet-opt ${picked.has(v) ? 'on' : ''}" data-v="${esc(v)}">${esc(l)}<span class="tick">${picked.has(v) ? '✓' : ''}</span></button>`).join('')}</div>
+      <button class="btn primary wide" data-apply>החל</button></div>`;
+    const close = (v) => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); resolve(v); };
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('.sheet-opt');
+      if (b) {
+        const v = b.dataset.v;
+        picked.has(v) ? picked.delete(v) : picked.add(v);
+        b.classList.toggle('on', picked.has(v));
+        b.querySelector('.tick').textContent = picked.has(v) ? '✓' : '';
+      } else if (e.target.closest('[data-clear]')) {
+        picked.clear();
+        el.querySelectorAll('.sheet-opt').forEach((x) => { x.classList.remove('on'); x.querySelector('.tick').textContent = ''; });
+      } else if (e.target.closest('[data-apply]')) close([...picked]);
+      else if (e.target === el) close(null);
+    });
+    document.body.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('open'));
+  });
+}
 
 function bottomSheet(title, options, current) {
   return new Promise((resolve) => {
@@ -166,19 +205,20 @@ async function pageList(kind, st) {
   const isSeries = kind === 'series';
   const title = isSeries ? 'סדרות' : 'סרטים';
   const key = `filters:${kind}`;
-  const f = {state: 'all', decade: '', sort: '', ...store.get(key, {})};
+  const f = {state: 'all', decade: '', sort: '', genres: [], ...store.get(key, {})};
   const states = isSeries
     ? [['all', 'הכל'], ['watching', 'באמצע'], ['new', 'לא התחלתי'], ['done', 'סיימתי']]
     : [['all', 'הכל'], ['watching', 'באמצע'], ['new', 'לא ראיתי'], ['done', 'ראיתי']];
   // "באמצע" is most useful sorted by what you watched last, unless you picked another order
   const sortOf = () => f.sort || (f.state === 'watching' ? 'watched' : 'added');
-  const query = (offset, limit) => `/api/library?kind=${kind}&state=${f.state}&decade=${f.decade}&sort=${sortOf()}&offset=${offset}&limit=${limit}`;
+  const query = (offset, limit) => `/api/library?kind=${kind}&state=${f.state}&decade=${f.decade}&genres=${encodeURIComponent((f.genres || []).join(','))}&sort=${sortOf()}&offset=${offset}&limit=${limit}`;
   const label = (list, v) => (list.find(([k]) => k === v) || list[0])[1];
 
   const shell = (sub, body) => pageHeader(title, sub) + `
     <div class="filters">
       <div class="chips">${states.map(([v, l]) => `<button class="tab ${f.state === v ? 'active' : ''}" data-state="${v}">${l}</button>`).join('')}</div>
       <div class="chips">
+        <button class="tab ${f.genres.length ? 'set' : ''}" data-pick="genre">${f.genres.length ? esc(f.genres.length === 1 ? f.genres[0] : `${f.genres.length} ז'אנרים`) : "ז'אנר"} ▾</button>
         <button class="tab ${f.decade ? 'set' : ''}" data-pick="decade">${f.decade ? esc(label(DECADES, f.decade)) : 'שנה'} ▾</button>
         <button class="tab" data-pick="sort">מיון: ${esc(label(SORTS, sortOf()))} ▾</button>
       </div>
@@ -196,7 +236,7 @@ async function pageList(kind, st) {
       if (!more.titles.length) break;
       titles = titles.concat(more.titles);
     }
-    const filtered = f.state !== 'all' || f.decade;
+    const filtered = f.state !== 'all' || f.decade || f.genres.length;
     let body;
     if (data.total) {
       body = `<div class="pgrid" id="grid">${titles.map(posterCard).join('')}</div>
@@ -222,6 +262,12 @@ async function pageList(kind, st) {
   const changed = () => { store.set(key, f); render(true); };
   function bind() {
     $app.querySelectorAll('[data-state]').forEach((b) => b.onclick = () => { f.state = b.dataset.state; changed(); });
+    $app.querySelector('[data-pick=genre]').onclick = async () => {
+      const list = await api(`/api/genres?kind=${kind}`);
+      if (!list.length) { alert("עדיין אין ז'אנרים. הם מגיעים מ-TMDB, תוך כדי הורדת הפוסטרים."); return; }
+      const v = await multiSheet("ז'אנר", list.map((g) => [g.name, `${g.name} (${n(g.count)})`]), f.genres);
+      if (v !== null) { f.genres = v; changed(); }
+    };
     $app.querySelector('[data-pick=decade]').onclick = async () => {
       const v = await bottomSheet('שנה', DECADES, f.decade);
       if (v !== null && v !== f.decade) { f.decade = v; changed(); }
@@ -231,7 +277,7 @@ async function pageList(kind, st) {
       if (v !== null && v !== sortOf()) { f.sort = v; changed(); }
     };
     const clear = $app.querySelector('#clear');
-    if (clear) clear.onclick = () => { f.state = 'all'; f.decade = ''; changed(); };
+    if (clear) clear.onclick = () => { f.state = 'all'; f.decade = ''; f.genres = []; changed(); };
   }
   await render(false);
 }
@@ -339,6 +385,7 @@ function posterCard(t) {
   return `<a class="poster-card" href="#/title/${t.id}">
     <div class="poster">
       <div class="ph">${esc(t.name)}</div>${img(t.poster)}
+      ${t.rating ? `<span class="rate">⭐ ${t.rating}</span>` : ''}
       ${corner}
       ${p && !watchedAll ? `<div class="bar"><i style="width:${p}%"></i></div>` : ''}
     </div>
@@ -350,6 +397,8 @@ function posterCard(t) {
 let editMode = false;
 
 async function pageTitle(id) {
+  // re-draw after a change without jumping back to the top
+  const reload = async () => { const y = window.scrollY; await pageTitle(id); window.scrollTo(0, y); };
   $app.innerHTML = '<div class="spinner"></div>';
   const data = await api(`/api/titles/${id}${editMode ? '?hidden=true' : ''}`);
   const {title: t, media, resume} = data;
@@ -361,44 +410,71 @@ async function pageTitle(id) {
   let season = +sessionStorage.getItem(key) || (resume ? (resume.media.season ?? 1) : seasons[0]);
   if (!seasons.includes(season)) season = seasons[0];
 
-  let resumeBtn = '';
+  let resumeLabel = '';
   if (resume) {
     const m = resume.media;
-    const label = resume.state === 'resume' ? `המשך ${isSeries ? epLabel(m) + ' ' : ''}מ-${fmtTime(resume.position)}`
-      : resume.state === 'next' ? `המשך ל${epLong(m)}`
+    resumeLabel = resume.state === 'resume' ? `המשך${isSeries ? ' · ' + epLabel(m) : ''} · ${fmtTime(resume.position)}`
+      : resume.state === 'next' ? `המשך · ${epLabel(m)}`
       : resume.state === 'done' ? 'צפה שוב'
       : isSeries ? `התחל לצפות · ${epLabel(m)}` : 'צפה עכשיו';
-    resumeBtn = `<a class="btn primary" href="#/watch/${m.id}">▶ ${esc(label)}</a>`;
   }
-  const total = media.filter((m) => !m.hidden).length;
-  const watched = media.filter((m) => !m.hidden && m.completed).length;
+  const visible = media.filter((m) => !m.hidden);
+  const total = visible.length;
+  const genres = (t.genres || []).slice(0, 3).join(', ');
+  const length = !isSeries && (t.runtime || visible[0]?.duration) ? fmtDur(t.runtime ? t.runtime * 60 : visible[0].duration) : '';
+  const facts = [t.year, genres, isSeries ? `${seasons.length} עונות` : length].filter(Boolean).map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ');
+  const cast = (t.cast || []).slice(0, 10);
 
   $app.innerHTML = `
     <section class="hero" ${bg(t.backdrop)}>
       <a class="iconbtn hero-back" href="javascript:history.back()" aria-label="חזרה">→</a>
+      <button class="iconbtn hero-menu" id="title-menu" aria-label="עוד">⋯</button>
       <div class="hero-inner">
         <div class="poster-img"><div class="ph">${esc(t.name)}</div>${img(t.poster)}</div>
-        <div>
+        <div class="hero-text">
           <h1>${esc(t.name)}</h1>
-          <div class="facts">
-            <span>${isSeries ? 'סדרה' : 'סרט'}</span>
-            ${t.year ? `<span>· ${t.year}</span>` : ''}
-            ${isSeries ? `<span>· ${seasons.length} עונות · ${total} פרקים</span>` : ''}
-            ${watched ? `<span>· צפית ב-${watched}/${total}</span>` : ''}
-          </div>
-          ${t.overview ? `<p class="overview">${esc(t.overview)}</p>` : ''}
-          <div class="actions">
-            ${resumeBtn}
-            <button class="btn" id="edit-toggle">${editMode ? '✓ סיום עריכה' : '✏️ עריכה'}</button>
+          ${t.original_name && t.original_name !== t.name ? `<div class="orig">${esc(t.original_name)}</div>` : ''}
+          <div class="facts">${facts}</div>
+          <div class="chips-inline">
+            ${t.rating ? `<span class="chip-s gold">⭐ ${t.rating} TMDB</span>` : ''}
+            ${isSeries ? `<span class="chip-s">${total} פרקים</span>` : ''}
           </div>
         </div>
       </div>
     </section>
+    ${resume ? `<a class="btn primary wide" href="#/watch/${resume.media.id}">▶ ${esc(resumeLabel)}</a>` : ''}
+    ${t.overview ? `<p class="overview-text clamp" id="overview">${esc(t.overview)}</p>
+      ${t.overview.length > 160 ? '<button class="linkbtn" id="more-overview">קרא עוד ▾</button>' : ''}` : ''}
+    ${cast.length ? `<div class="cast">${cast.map((c) => `<div class="castm"><div class="avatar">${c.photo ? img(c.photo) : `<span>${esc((c.name || '?')[0])}</span>`}</div><div class="cn">${esc(c.name)}</div></div>`).join('')}</div>` : ''}
     ${editMode ? editTitlePanel(t) : ''}
-    ${isSeries && seasons.length > 1 ? `<div class="tabs" style="margin-bottom:16px">
+    ${isSeries && seasons.length > 1 ? `<div class="chips season-tabs">
         ${seasons.map((s) => `<button class="tab ${s === season ? 'active' : ''}" data-season="${s}">עונה ${s}${labels[s] ? ' · ' + esc(labels[s]) : ''}</button>`).join('')}
       </div>` : ''}
+    ${isSeries ? '<div class="season-bar" id="season-bar"></div>' : ''}
     <div class="episodes" id="eps"></div>`;
+
+  const seasonList = () => (isSeries ? media.filter((m) => (m.season ?? 1) === season && !m.hidden) : visible);
+  const renderSeasonBar = () => {
+    const bar = $app.querySelector('#season-bar');
+    if (!bar) return;
+    const list = seasonList(), done = list.filter((m) => m.completed).length, all = list.length && done === list.length;
+    bar.innerHTML = `<span>עונה ${season} · ${done}/${list.length} נצפו</span>
+      <button class="linkbtn" id="mark-season">${all ? '↺ בטל סימון עונה' : '✓ סמן עונה כנצפתה'}</button>`;
+    bar.querySelector('#mark-season').onclick = () => markMany(list.map((m) => m.id), !all, `עונה ${season}`);
+  };
+  async function markMany(ids, watched, what) {
+    try {
+      const r = await api('/api/watched-many', {method: 'POST', body: {ids, watched}});
+      libraryCache = null;
+      await reload();
+      undoToast(`${what} ${watched ? 'סומנה כנצפתה' : 'סומנה כלא נצפתה'}`, async () => {
+        const back = Object.entries(r.before);
+        await api('/api/watched-many', {method: 'POST', body: {ids: back.filter(([, w]) => w).map(([i]) => +i), watched: true}});
+        await api('/api/watched-many', {method: 'POST', body: {ids: back.filter(([, w]) => !w).map(([i]) => +i), watched: false}});
+        reload();
+      });
+    } catch (e) { alert(e.message); }
+  }
 
   const renderEps = () => {
     const list = isSeries ? media.filter((m) => (m.season ?? 1) === season) : media;
@@ -408,6 +484,7 @@ async function pageTitle(id) {
       seen[k] = (seen[k] || 0) + 1;
       return episodeRow(m, isSeries, seen[k] > 1 ? seen[k] : 0, resume && resume.media.id === m.id);
     }).join('');
+    renderSeasonBar();
   };
   renderEps();
 
@@ -417,7 +494,29 @@ async function pageTitle(id) {
     $app.querySelectorAll('[data-season]').forEach((x) => x.classList.toggle('active', x === b));
     renderEps();
   });
-  $app.querySelector('#edit-toggle').onclick = () => { editMode = !editMode; pageTitle(id); };
+  $app.querySelector('#more-overview')?.addEventListener('click', (e) => {
+    $app.querySelector('#overview').classList.toggle('clamp');
+    e.target.textContent = $app.querySelector('#overview').classList.contains('clamp') ? 'קרא עוד ▾' : 'הצג פחות ▴';
+  });
+  $app.querySelector('#title-menu').onclick = async () => {
+    const opts = [['edit', editMode ? '✓ סיום עריכה' : '✏️ עריכת פרטים ופרקים'],
+                  ['all', '✓ סמן הכל כנצפה'], ['reset', '↺ אפס התקדמות']];
+    const v = await bottomSheet(t.name, opts, '');
+    if (v === 'edit') { editMode = !editMode; pageTitle(id); }
+    else if (v === 'all') markMany(visible.map((m) => m.id), true, isSeries ? 'הסדרה' : 'הסרט');
+    else if (v === 'reset') markMany(visible.map((m) => m.id), false, isSeries ? 'הסדרה' : 'הסרט');
+  };
+  // long press on an episode: mark everything up to it as watched
+  $app.querySelector('#eps').addEventListener('contextmenu', async (e) => {
+    const row = e.target.closest('.ep');
+    if (!row || !isSeries || editMode) return;
+    e.preventDefault();
+    const list = seasonList();
+    const idx = list.findIndex((m) => String(m.id) === row.dataset.id);
+    if (idx < 0) return;
+    const v = await bottomSheet(`פרק ${list[idx].episode}`, [['upto', `✓ סמן עד כאן כנצפה (${idx + 1} פרקים)`]], '');
+    if (v === 'upto') markMany(list.slice(0, idx + 1).map((m) => m.id), true, `עד פרק ${list[idx].episode}`);
+  });
 
   // episode actions (event delegation)
   $app.querySelector('#eps').onclick = async (e) => {
@@ -440,7 +539,7 @@ async function pageTitle(id) {
         await api(`/api/media/${mid}`, {method: 'PATCH', body: {hidden: btn.dataset.hidden !== '1'}});
       }
       libraryCache = null;
-      pageTitle(id);
+      reload();
     } catch (err) { alert(err.message); }
   };
 
@@ -455,7 +554,7 @@ function episodeRow(m, isSeries, version, current) {
     .filter(Boolean).map(esc).join(' · ');
   const state = m.completed ? '<span class="badge ok">נצפה</span>'
     : m.position >= 10 ? `<span class="badge accent">עצרת ב-${fmtTime(m.position)}</span>` : '';
-  return `<div class="ep ${current ? 'current' : ''} ${m.hidden ? 'is-hidden' : ''}">
+  return `<div class="ep ${current ? 'current' : ''} ${m.hidden ? 'is-hidden' : ''}" data-id="${m.id}">
     <a class="num" href="#/watch/${m.id}">${isSeries && m.episode != null ? m.episode : '▶'}</a>
     <a class="thumb" href="#/watch/${m.id}">${img(m.thumb)}${p ? `<div class="bar"><i style="width:${p}%"></i></div>` : ''}</a>
     <a class="info" href="#/watch/${m.id}">
