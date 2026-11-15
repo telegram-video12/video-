@@ -248,7 +248,8 @@ class Database:
                    MAX(m.added_at) AS last_added,
                    MIN(m.id) AS first_media_id,
                    COUNT(DISTINCT CASE WHEN p.completed = 1 THEN {EP_KEY} END) AS watched_count,
-                   MAX(p.updated_at) AS last_watched
+                   MAX(CASE WHEN p.completed = 1 OR p.position >= {MIN_STARTED} THEN p.updated_at END) AS last_watched,
+                   MAX(m.duration) AS duration
             FROM titles t
             JOIN media m ON m.title_id = t.id AND m.hidden = 0
             LEFT JOIN progress p ON p.media_id = m.id

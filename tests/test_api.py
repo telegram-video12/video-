@@ -486,3 +486,48 @@ def test_tmdb_stops_on_rejected_key_and_hides_it(client, monkeypatch, caplog):
     assert "SECRETKEY" not in caplog.text
     # titles are still pending for the next (valid) key
     assert len(client.app.state.db.titles_needing_tmdb()) >= 30
+
+
+def test_spelling_variants_merge_and_old_libraries_are_rekeyed(client):
+    from app.library import migrate_norms
+    login(client)
+    db = client.app.state.db
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "ספיידרמן אין דרך הביתה (2021)")), (2, vm(2, "ספיידרמן אין דרך הבייתה (2021) 1080p")),
+                   (3, vm(3, "ספיידר-מן 2 (2004)")), (4, vm(4, "ספיידרמן 2 (2004)"))]
+    scan(client)
+    assert client.get("/api/library").json()["total"] == 2
+    # an old library keyed with spaces (before this change) is re-keyed and merged on start-up
+    a = db.x("INSERT INTO titles (kind, name, norm_name, created_at, tmdb_id) VALUES ('movie', 'Old A', 'old movie', 0, 77)")
+    b = db.x("INSERT INTO titles (kind, name, norm_name, created_at) VALUES ('movie', 'Old B', 'oldmovie', 0)")
+    db.x("INSERT INTO media (chat_id, msg_id, title_id, size, added_at, auto_norm) VALUES (-100, 900, ?, 1, 0, 'old movie')", (a,))
+    db.x("INSERT INTO media (chat_id, msg_id, title_id, size, added_at, auto_norm) VALUES (-100, 901, ?, 1, 0, 'oldmovie')", (b,))
+    db.set_pref("norm_version", "1")
+    assert migrate_norms(db) >= 1
+    kept = db.q("SELECT * FROM titles WHERE norm_name = 'oldmovie'")
+    assert len(kept) == 1 and kept[0]["tmdb_id"] == 77          # the one with TMDB info survives
+    assert {m["title_id"] for m in db.q("SELECT title_id FROM media WHERE msg_id IN (900, 901)")} == {kept[0]["id"]}
+    assert db.q1("SELECT COUNT(*) c FROM media WHERE auto_norm = 'old movie'")["c"] == 0
+
+
+def test_library_filters_and_sorting(client):
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "בטא (1995)")), (2, vm(2, "אלפא (2012)")), (3, vm(3, "גמא (2021)")),
+                   (4, vm(4, "Zulu (2003)")), (5, vm(5, "דלתא עונה 1 פרק 1")), (6, vm(6, "דלתא עונה 1 פרק 2"))]
+    scan(client)
+    lib = lambda qs: client.get("/api/library?" + qs).json()
+    ids = {t["name"]: t["first_media_id"] for t in lib("limit=50")["titles"]}
+    client.post(f"/api/progress/{ids['אלפא']}", json={"position": 600, "duration": 1500})   # watching
+    client.post(f"/api/watched/{ids['גמא']}", json={"watched": True})                        # done
+    client.post(f"/api/progress/{ids['בטא']}", json={"position": 3, "duration": 1500})       # a peek: still new
+    names = lambda qs: [t["name"] for t in lib(qs)["titles"]]
+    assert names("kind=movie&state=watching") == ["אלפא"]
+    assert names("kind=movie&state=done") == ["גמא"]
+    assert sorted(names("kind=movie&state=new")) == sorted(["בטא", "Zulu"])
+    assert names("kind=movie&sort=name") == ["אלפא", "בטא", "גמא", "Zulu"]       # Hebrew first, then English
+    assert names("kind=movie&sort=year") == ["גמא", "אלפא", "Zulu", "בטא"]
+    assert names("kind=movie&decade=2000") == ["Zulu"]
+    assert names("kind=movie&decade=1990") == ["בטא"] and names("kind=movie&decade=old") == []
+    assert names("kind=movie&sort=watched")[:2] == ["גמא", "אלפא"]
+    assert lib("kind=series&state=new")["total"] == 1

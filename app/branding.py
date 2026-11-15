@@ -12,9 +12,9 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 
-from .parser import EPISODE_PATTERNS, clean_name, normalize
+from .parser import EPISODE_PATTERNS, clean_name, normalize, words
 
-VERSION = "3"  # bump when detection changes, so existing libraries are re-filed once
+VERSION = "4"  # bump when detection changes, so existing libraries are re-filed once
 MIN_MOVIES = 20        # need this many movie captions in a channel before guessing
 MIN_COUNT = 10         # a signature must appear at least this often...
 MIN_SHARE = 0.005      # ...and in at least 0.5% of the channel's movies (big "archive" channels mix many sources)
@@ -27,7 +27,7 @@ def _has_episode(text: str) -> bool:
 
 
 def _norm_line(line: str) -> str:
-    return normalize(clean_name(line))
+    return words(clean_name(line))
 
 
 YEAR_TOKEN = re.compile(r"^(?:19|20)\d\d$")
@@ -36,7 +36,7 @@ MIN_CONFIRMED = 0.15   # share of a prefix's movies that also appear under their
 
 def _name_tokens(caption: str, lines: set) -> list[str]:
     line = next((l for l in caption.splitlines() if _norm_line(l) and _norm_line(l) not in lines), "")
-    toks = normalize(clean_name(line)).split()
+    toks = words(clean_name(line)).split()
     while toks and YEAR_TOKEN.match(toks[-1]):
         toks.pop()
     return toks
@@ -44,6 +44,14 @@ def _name_tokens(caption: str, lines: set) -> list[str]:
 
 def _same_length(a: float | None, b: float | None) -> bool:
     return bool(a and b and abs(a - b) <= max(120, 0.03 * max(a, b)))
+
+
+def _same_movie(rest: str, a: float | None, b: float | None) -> bool:
+    """Is the other upload the same movie? Same length when both lengths are known; when one is not
+    (files sent as documents often have none), trust only a name of two words or more."""
+    if a and b:
+        return _same_length(a, b)
+    return len(rest.split()) >= 2
 
 
 def detect(captions: list, corpus: list | None = None) -> dict:
@@ -76,7 +84,7 @@ def detect(captions: list, corpus: list | None = None) -> dict:
     starts: dict = defaultdict(list)
     ends: dict = defaultdict(list)
     for c, dur in (corpus if corpus is not None else captions):
-        if not c or not dur or _has_episode(c):
+        if not c or _has_episode(c):
             continue
         toks = _name_tokens(c, lines)
         # the whole name, and the name minus up to 3 words at either end
@@ -102,7 +110,7 @@ def detect(captions: list, corpus: list | None = None) -> dict:
             if len({r for r, _ in rests}) < k * MIN_VARIETY:
                 continue
             confirmed = sum(1 for r, d in rests
-                            if re.search(r"[^\W\d_]", r) and any(_same_length(d, o) for o in seen.get(r, ())[:20]))
+                            if re.search(r"[^\W\d_]", r) and any(_same_movie(r, d, o) for o in seen.get(r, ())[:20]))
             if confirmed >= k * MIN_CONFIRMED:
                 found.append(list(sig))
         # keep the shortest form: "דב ס" rather than also "2 דב ס" (which would eat the "2")
@@ -119,7 +127,8 @@ def detect(captions: list, corpus: list | None = None) -> dict:
 def _words_regex(tokens: list[str]) -> str:
     # normalize() dropped quotes ("ע\"י" -> "עי"), so allow them between letters again
     def tok(t: str) -> str:
-        return "['\"׳״]?".join(re.escape(ch) for ch in t)
+        # words() also merged doubled ו/י ("טיים" -> "טים"), so allow them doubled again
+        return "['\"׳״]?".join(re.escape(ch) + ("+" if ch in "יו" else "") for ch in t)
     return r"[\W_]*".join(tok(t) for t in tokens)
 
 
@@ -162,5 +171,5 @@ def strip_name(name: str, branding: dict | None) -> str:
 def combine(auto: dict | None, phrases: list[str]) -> dict:
     """Automatic signature of one channel + the phrases you listed in Settings (for every channel)."""
     out = dict(auto or {})
-    out["anywhere"] = [t for t in (normalize(p).split() for p in phrases) if t]
+    out["anywhere"] = [t for t in (words(p).split() for p in phrases) if t]
     return out

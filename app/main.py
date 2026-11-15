@@ -199,6 +199,25 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         items = db.library_titles()
         if q:
             items = [t for t in items if q in normalize(t["name"])]
+        state = qp.get("state", "all")
+        if state != "all":
+            def watch_state(t):
+                if t["media_count"] and t["watched_count"] >= t["media_count"]:
+                    return "done"
+                return "watching" if t["last_watched"] else "new"
+            items = [t for t in items if watch_state(t) == state]
+        decade = qp.get("decade", "")
+        if decade:
+            lo, hi = {"2020": (2020, 9999), "2010": (2010, 2019), "2000": (2000, 2009),
+                      "1990": (1990, 1999), "old": (0, 1989)}.get(decade, (0, 9999))
+            items = [t for t in items if t["year"] and lo <= t["year"] <= hi]
+        sort = qp.get("sort", "added")
+        if sort == "watched":
+            items = sorted(items, key=lambda t: t["last_watched"] or 0, reverse=True)
+        elif sort == "name":
+            items = sorted(items, key=lambda t: (not re.match(r"[א-ת]", t["name"] or ""), (t["name"] or "").lower()))
+        elif sort == "year":
+            items = sorted(items, key=lambda t: t["year"] or 0, reverse=True)
         counts = {"all": len(items), "series": sum(1 for t in items if t["kind"] == "series")}
         counts["movie"] = counts["all"] - counts["series"]
         if kind in ("series", "movie"):
@@ -538,7 +557,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
     @asynccontextmanager
     async def lifespan(app):
-        from .library import repair
+        from .library import migrate_norms, repair
+        migrate_norms(db)
         repair(db)
         try:
             await tg.start()

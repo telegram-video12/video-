@@ -145,3 +145,37 @@ def repair(db: Database) -> int:
     if fixed:
         log.warning("repaired %d videos without a title", fixed)
     return fixed
+
+
+NORM_VERSION = "2"  # bump when parser.normalize() changes
+
+
+def migrate_norms(db: Database) -> int:
+    """Re-key existing titles after normalize() changed; titles that now share a key are merged
+    (the one with TMDB info is kept), so posters, progress and edits are not lost."""
+    if db.get_pref("norm_version") == NORM_VERSION:
+        return 0
+    started, merged = time.time(), 0
+    with db._lock:
+        conn = db.conn
+        groups: dict[tuple[str, str], list] = {}
+        for tid, kind, norm, tmdb in conn.execute("SELECT id, kind, norm_name, tmdb_id FROM titles"):
+            groups.setdefault((kind, normalize(norm) or norm), []).append((tid, norm, tmdb))
+        for (kind, key), rows in groups.items():
+            rows.sort(key=lambda r: (r[2] is None, r[0]))  # keep a title that has TMDB info, else the oldest
+            dst = rows[0][0]
+            for tid, _, _ in rows[1:]:
+                conn.execute("UPDATE media SET title_id = ? WHERE title_id = ?", (dst, tid))
+                conn.execute("DELETE FROM titles WHERE id = ?", (tid,))
+                merged += 1
+            if rows[0][1] != key:
+                conn.execute("UPDATE titles SET norm_name = ? WHERE id = ?", (key, dst))
+        for (old,) in conn.execute("SELECT DISTINCT auto_norm FROM media WHERE auto_norm IS NOT NULL").fetchall():
+            new = normalize(old) or old
+            if new != old:
+                conn.execute("UPDATE media SET auto_norm = ? WHERE auto_norm = ?", (new, old))
+        conn.commit()
+        db.version += 1
+    db.set_pref("norm_version", NORM_VERSION)
+    log.info("name keys updated: %d duplicate titles merged (%.1fs)", merged, time.time() - started)
+    return merged

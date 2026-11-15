@@ -111,13 +111,19 @@ def quality_from_text(*texts: str | None) -> int:
     return best
 
 
-def normalize(name: str) -> str:
-    """Key used to group episodes of the same title together."""
+def words(name: str) -> str:
+    """Lower-case words without punctuation; spelling variants unified ("הבייתה" = "הביתה")."""
     name = name.lower()
     name = re.sub(r"['׳\"]", "", name)
     name = re.sub(r"[^\w]+", " ", name)
     name = re.sub(r"\bthe\b", " ", name)
+    name = re.sub(r"([יו])\1+", r"\1", name)
     return re.sub(r"\s+", " ", name).strip()
+
+
+def normalize(name: str) -> str:
+    """Key used to group uploads of the same title: "ספיידר-מן" = "ספיידרמן", "Spider Man" = "Spiderman"."""
+    return words(name).replace(" ", "")
 
 
 def _first_meaningful_line(caption: str) -> str:

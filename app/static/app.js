@@ -20,6 +20,7 @@ const fmtDur = (sec) => {
   const m = Math.round(sec / 60);
   return m >= 60 ? `${Math.floor(m / 60)} ש׳ ${m % 60} ד׳` : `${m} דק׳`;
 };
+const fmtLen = (sec) => `${Math.floor(sec / 3600)}:${String(Math.round(sec / 60) % 60).padStart(2, '0')}`;
 const fmtSize = (b) => b > 1e9 ? (b / 1e9).toFixed(1) + 'GB' : Math.round(b / 1e6) + 'MB';
 const epLabel = (m) => m.episode != null ? `ע${m.season ?? 1} · פ${m.episode}` : '';
 const epLong = (m) => m.episode != null ? `עונה ${m.season ?? 1}, פרק ${m.episode}` : '';
@@ -137,30 +138,102 @@ function skeletonGrid() {
 }
 
 // ------------------------------------------------------------ series / movies
+const store = {  // localStorage can be missing (private mode): never let it break the page
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (_) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} },
+};
+const DECADES = [['', 'כל השנים'], ['2020', '2020 ומעלה'], ['2010', '2010–2019'], ['2000', '2000–2009'], ['1990', '1990–1999'], ['old', 'לפני 1990']];
+const SORTS = [['added', 'נוסף לאחרונה'], ['watched', 'נצפה לאחרונה'], ['name', 'א–ת'], ['year', 'שנה (חדש קודם)']];
+
+function bottomSheet(title, options, current) {
+  return new Promise((resolve) => {
+    const el = document.createElement('div');
+    el.className = 'sheet-wrap';
+    el.innerHTML = `<div class="sheet"><div class="sheet-grip"></div><h3>${esc(title)}</h3>
+      ${options.map(([v, l]) => `<button class="sheet-opt ${v === current ? 'on' : ''}" data-v="${esc(v)}">${esc(l)}${v === current ? '<span>✓</span>' : ''}</button>`).join('')}
+    </div>`;
+    const close = (v) => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); resolve(v); };
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('.sheet-opt');
+      if (b) close(b.dataset.v); else if (e.target === el) close(null);
+    });
+    document.body.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('open'));
+  });
+}
+
 async function pageList(kind, st) {
   const isSeries = kind === 'series';
   const title = isSeries ? 'סדרות' : 'סרטים';
-  $app.innerHTML = pageHeader(title) + skeletonGrid();
-  const want = Math.max(PAGE, st.loaded || 0);  // coming back: load as much as before
-  const data = await api(`/api/library?kind=${kind}&offset=0&limit=${Math.min(200, want)}`);
-  let titles = data.titles;
-  while (titles.length < want && titles.length < data.total) {
-    const more = await api(`/api/library?kind=${kind}&offset=${titles.length}&limit=200`);
-    if (!more.titles.length) break;
-    titles = titles.concat(more.titles);
+  const key = `filters:${kind}`;
+  const f = {state: 'all', decade: '', sort: '', ...store.get(key, {})};
+  const states = isSeries
+    ? [['all', 'הכל'], ['watching', 'באמצע'], ['new', 'לא התחלתי'], ['done', 'סיימתי']]
+    : [['all', 'הכל'], ['watching', 'באמצע'], ['new', 'לא ראיתי'], ['done', 'ראיתי']];
+  // "באמצע" is most useful sorted by what you watched last, unless you picked another order
+  const sortOf = () => f.sort || (f.state === 'watching' ? 'watched' : 'added');
+  const query = (offset, limit) => `/api/library?kind=${kind}&state=${f.state}&decade=${f.decade}&sort=${sortOf()}&offset=${offset}&limit=${limit}`;
+  const label = (list, v) => (list.find(([k]) => k === v) || list[0])[1];
+
+  const shell = (sub, body) => pageHeader(title, sub) + `
+    <div class="filters">
+      <div class="chips">${states.map(([v, l]) => `<button class="tab ${f.state === v ? 'active' : ''}" data-state="${v}">${l}</button>`).join('')}</div>
+      <div class="chips">
+        <button class="tab ${f.decade ? 'set' : ''}" data-pick="decade">${f.decade ? esc(label(DECADES, f.decade)) : 'שנה'} ▾</button>
+        <button class="tab" data-pick="sort">מיון: ${esc(label(SORTS, sortOf()))} ▾</button>
+      </div>
+    </div>` + body;
+
+  const render = async (fresh) => {
+    if (fresh) { st.loaded = 0; st.scrollY = 0; }
+    $app.innerHTML = shell('', skeletonGrid());
+    bind();
+    const want = Math.max(PAGE, st.loaded || 0);  // coming back: load as much as before
+    const data = await api(query(0, Math.min(200, want)));
+    let titles = data.titles;
+    while (titles.length < want && titles.length < data.total) {
+      const more = await api(query(titles.length, 200));
+      if (!more.titles.length) break;
+      titles = titles.concat(more.titles);
+    }
+    const filtered = f.state !== 'all' || f.decade;
+    let body;
+    if (data.total) {
+      body = `<div class="pgrid" id="grid">${titles.map(posterCard).join('')}</div>
+        <div id="more" ${titles.length < data.total ? '' : 'hidden'}><div class="spinner"></div></div>`;
+    } else if (filtered) {
+      body = `<div class="empty"><h2>אין ${title} במצב הזה</h2><button class="btn" id="clear">נקה סינון</button></div>`;
+    } else {
+      body = emptyLibrary();
+    }
+    $app.innerHTML = shell(data.total || filtered ? `${n(data.total)} ${title}${filtered ? ' בסינון הזה' : ' בספרייה'}` : '', body);
+    bind();
+    st.loaded = titles.length;
+    if (cleanup) cleanup();
+    cleanup = infiniteScroll(async () => {
+      if (st.loaded >= data.total) return false;
+      const more = await api(query(st.loaded, PAGE));
+      $app.querySelector('#grid').insertAdjacentHTML('beforeend', more.titles.map(posterCard).join(''));
+      st.loaded += more.titles.length;
+      return more.titles.length > 0 && st.loaded < data.total;
+    });
+  };
+
+  const changed = () => { store.set(key, f); render(true); };
+  function bind() {
+    $app.querySelectorAll('[data-state]').forEach((b) => b.onclick = () => { f.state = b.dataset.state; changed(); });
+    $app.querySelector('[data-pick=decade]').onclick = async () => {
+      const v = await bottomSheet('שנה', DECADES, f.decade);
+      if (v !== null && v !== f.decade) { f.decade = v; changed(); }
+    };
+    $app.querySelector('[data-pick=sort]').onclick = async () => {
+      const v = await bottomSheet('מיון', SORTS, sortOf());
+      if (v !== null && v !== sortOf()) { f.sort = v; changed(); }
+    };
+    const clear = $app.querySelector('#clear');
+    if (clear) clear.onclick = () => { f.state = 'all'; f.decade = ''; changed(); };
   }
-  if (!data.counts.all) { $app.innerHTML = pageHeader(title) + emptyLibrary(); return; }
-  $app.innerHTML = pageHeader(title, `${n(data.total)} ${title} בספרייה`) +
-    `<div class="pgrid" id="grid">${titles.map(posterCard).join('')}</div>
-     <div id="more" ${titles.length < data.total ? '' : 'hidden'}><div class="spinner"></div></div>`;
-  st.loaded = titles.length;
-  cleanup = infiniteScroll(async () => {
-    if (st.loaded >= data.total) return false;
-    const more = await api(`/api/library?kind=${kind}&offset=${st.loaded}&limit=${PAGE}`);
-    $app.querySelector('#grid').insertAdjacentHTML('beforeend', more.titles.map(posterCard).join(''));
-    st.loaded += more.titles.length;
-    return more.titles.length > 0 && st.loaded < data.total;
-  });
+  await render(false);
 }
 
 function infiniteScroll(loadMore) {
@@ -181,31 +254,50 @@ function infiniteScroll(loadMore) {
 // -------------------------------------------------------------------- search
 async function pageSearch(st) {
   $app.innerHTML = `<header class="phead"><div class="searchbox">
-      <span>🔍</span><input id="q" type="search" placeholder="חיפוש סדרה או סרט..." value="${esc(st.q || '')}" autocomplete="off">
+      <span>🔍</span><input id="q" type="search" enterkeyhint="search" placeholder="חיפוש סדרה או סרט..." value="${esc(st.q || '')}" autocomplete="off">
     </div><a class="iconbtn" href="javascript:history.back()" aria-label="חזרה">✕</a></header>
     <div id="results"></div>`;
   const input = $app.querySelector('#q'), out = $app.querySelector('#results');
-  let timer = null, token = 0;
+  let timer = null, saveTimer = null, token = 0;
+  const recent = () => store.get('recent-searches', []);
+  const remember = (q) => store.set('recent-searches', [q, ...recent().filter((x) => x !== q)].slice(0, 8));
+  const showRecent = () => {
+    const r = recent();
+    out.innerHTML = r.length
+      ? `<div class="rsec-head"><h2>חיפושים אחרונים</h2><a href="javascript:void 0" id="clear-recent">נקה</a></div>
+         <div class="chips wrap">${r.map((q) => `<button class="tab" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>`
+      : '<p class="muted center">הקלד שם של סדרה או סרט</p>';
+    out.querySelectorAll('[data-q]').forEach((b) => b.onclick = () => { input.value = b.dataset.q; run(); });
+    const c = out.querySelector('#clear-recent');
+    if (c) c.onclick = () => { store.set('recent-searches', []); showRecent(); };
+  };
   const run = async () => {
     const q = input.value.trim();
     st.q = q;
     const my = ++token;
-    if (!q) { out.innerHTML = '<p class="muted center">הקלד שם של סדרה או סרט</p>'; return; }
+    clearTimeout(saveTimer);
+    if (!q) { showRecent(); return; }
     out.innerHTML = skeletonGrid();
     const [s, m] = await Promise.all([
       api(`/api/library?kind=series&limit=30&q=${encodeURIComponent(q)}`),
-      api(`/api/library?kind=movie&limit=30&q=${encodeURIComponent(q)}`),
+      api(`/api/library?kind=movie&limit=60&q=${encodeURIComponent(q)}`),
     ]);
     if (my !== token) return;
-    if (!s.total && !m.total) { out.innerHTML = `<p class="muted center">לא נמצא "${esc(q)}" בספרייה</p>`; return; }
+    if (!s.total && !m.total) {
+      out.innerHTML = `<div class="empty"><h2>לא נמצא "${esc(q)}" בספרייה</h2><p>אולי הקבוצה שלו לא מסומנת ב<a class="link" href="#/more">הגדרות</a>.</p></div>`;
+      return;
+    }
+    if (q.length >= 2) saveTimer = setTimeout(() => remember(q), 1500);
     out.innerHTML =
       (s.total ? rowSection(`סדרות (${n(s.total)})`, '', `<div class="pgrid">${s.titles.map(posterCard).join('')}</div>`) : '') +
       (m.total ? rowSection(`סרטים (${n(m.total)})`, '', `<div class="pgrid">${m.titles.map(posterCard).join('')}</div>`) : '');
   };
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 300); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { input.blur(); if (input.value.trim().length >= 2) remember(input.value.trim()); } });
+  out.addEventListener('click', (e) => { if (e.target.closest('.poster-card') && input.value.trim().length >= 2) remember(input.value.trim()); });
   run();
   if (!st.q) setTimeout(() => input.focus(), 50);
-  cleanup = () => clearTimeout(timer);
+  cleanup = () => { clearTimeout(timer); clearTimeout(saveTimer); };
 }
 
 // ------------------------------------------------------------------- my list
@@ -239,7 +331,9 @@ function posterCard(t) {
   const p = t.media_count ? (t.watched_count / t.media_count) * 100 : 0;
   const sub = t.kind === 'series'
     ? `${t.season_count > 1 ? t.season_count + ' עונות · ' : ''}${t.media_count} פרקים`
-    : (t.year || 'סרט');
+    : null;
+  // numbers in a right-to-left line get reordered by the browser, so each one is isolated
+  const movieSub = [t.year, t.duration ? fmtLen(t.duration) : ''].filter(Boolean).map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ') || 'סרט';
   const corner = watchedAll ? '<span class="badge ok corner">✓ נצפה</span>'
     : t.watched_count ? `<span class="badge accent corner">${t.kind === 'series' ? `${t.watched_count}/${t.media_count}` : 'בצפייה'}</span>` : '';
   return `<a class="poster-card" href="#/title/${t.id}">
@@ -249,7 +343,7 @@ function posterCard(t) {
       ${p && !watchedAll ? `<div class="bar"><i style="width:${p}%"></i></div>` : ''}
     </div>
     <div class="name">${esc(t.name)}</div>
-    <div class="sub">${esc(sub)}</div></a>`;
+    <div class="sub">${sub === null ? movieSub : esc(sub)}</div></a>`;
 }
 
 // -------------------------------------------------------------------- title
