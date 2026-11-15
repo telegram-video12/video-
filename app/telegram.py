@@ -77,7 +77,11 @@ class TelegramService:
         if not self.configured:
             log.warning("Telegram API credentials missing - set them in the website settings")
             return
-        self.client = TelegramClient(self.session_path, self.api_id, self.api_hash)
+        # keep retrying after the network drops (computer asleep, Wi-Fi change) instead of giving up for good
+        self.client = TelegramClient(self.session_path, self.api_id, self.api_hash,
+                                     connection_retries=500, retry_delay=5, auto_reconnect=True)
+        if not getattr(self, "_watchdog", None) or self._watchdog.done():
+            self._watchdog = asyncio.ensure_future(self._keep_connected())
         await self.client.connect()
         self.authorized = await self.client.is_user_authorized()
         if not self.authorized:
@@ -133,6 +137,27 @@ class TelegramService:
         self.authorized = False
         await self.start()
 
+    async def _keep_connected(self) -> None:
+        """Every 20 seconds: if the connection to Telegram was lost, connect again."""
+        while True:
+            await asyncio.sleep(20)
+            try:
+                await self._ensure()
+            except Exception as e:  # noqa: BLE001 - try again next round
+                log.warning("Telegram reconnect failed: %s", e)
+
+    async def _ensure(self) -> None:
+        client = self.client
+        if client and not client.is_connected():
+            if not hasattr(self, "_connect_lock"):
+                self._connect_lock = asyncio.Lock()
+            async with self._connect_lock:
+                if not client.is_connected():
+                    log.info("Reconnecting to Telegram...")
+                    await asyncio.wait_for(client.connect(), 30)
+                    if not self.authorized:  # the site started while offline
+                        self.authorized = await client.is_user_authorized()
+
     def _require(self) -> TelegramClient:
         if not self.client or not self.authorized:
             raise RuntimeError("Telegram is not connected / logged in")
@@ -141,10 +166,12 @@ class TelegramService:
     async def me(self) -> dict | None:
         if not self.authorized or not self.client:
             return None
+        await self._ensure()
         u = await self.client.get_me()
         return {"name": " ".join(filter(None, [u.first_name, u.last_name])), "username": u.username}
 
     async def list_dialogs(self) -> list[dict]:
+        await self._ensure()
         client = self._require()
         out = []
         async for d in client.iter_dialogs():
@@ -170,6 +197,7 @@ class TelegramService:
 
     async def iter_messages(self, chat_id: int, min_id: int = 0) -> AsyncIterator[tuple[int, VideoMessage | None]]:
         """Yield (message id, video or None) for every message newer than min_id, oldest first."""
+        await self._ensure()
         client = self._require()
         entity = await self._entity(chat_id)
         async for msg in client.iter_messages(entity, min_id=min_id, reverse=True):
@@ -179,6 +207,7 @@ class TelegramService:
             yield msg.id, v
 
     async def get_message(self, chat_id: int, msg_id: int, fresh: bool = False):
+        await self._ensure()
         key = (chat_id, msg_id)
         cached = self._msg_cache.get(key)
         if cached and not fresh and time.time() - cached[0] < MSG_CACHE_SECONDS:
@@ -235,6 +264,7 @@ class TelegramService:
         waiting = self._batch.pop(chat_id, {})
         ids = list(waiting)
         try:
+            await self._ensure()
             client = self._require()
             entity = await self._entity(chat_id)
             for i in range(0, len(ids), 100):

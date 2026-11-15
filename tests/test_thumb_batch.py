@@ -8,6 +8,9 @@ class FakeClient:
     def __init__(self):
         self.calls = []
 
+    def is_connected(self):
+        return True
+
     async def get_input_entity(self, chat_id):
         return chat_id
 
