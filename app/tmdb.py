@@ -127,6 +127,8 @@ class TMDB:
             else:  # never log the URL: it contains the API key
                 log.warning("TMDB lookup failed for %s: HTTP %s", title["name"], e.response.status_code)
             return False
+        except httpx.TransportError:  # no internet right now (computer asleep, Wi-Fi dropped): the caller waits
+            raise
         except Exception as e:  # noqa: BLE001
             log.warning("TMDB lookup failed for %s: %s", title["name"], type(e).__name__)
             return False
@@ -175,8 +177,18 @@ class TMDB:
             async with sem:
                 if self.stopped:
                     return
-                if db.get_title(title["id"]):  # may have been merged meanwhile
-                    await self.enrich_title(db, title, tmdb_id=title.get("tmdb_id"))
+                for attempt in range(60):  # without internet, wait for it to come back instead of skipping everything
+                    if self.stopped or not db.get_title(title["id"]):  # may have been merged meanwhile
+                        break
+                    try:
+                        await self.enrich_title(db, title, tmdb_id=title.get("tmdb_id"))
+                        break
+                    except httpx.TransportError:
+                        if attempt == 0:
+                            log.warning("TMDB not reachable (no internet?) - waiting and trying again")
+                        self.status["waiting"] = True
+                        await asyncio.sleep(10)
+                self.status["waiting"] = False
                 self.status["done"] += 1
 
         try:

@@ -392,7 +392,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             any_media = db.q1("SELECT id FROM media WHERE title_id = ?", (title_id,))
             try:
                 await asyncio.wait_for(scanner.tmdb.enrich_title(db, t), 8)
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, httpx.TransportError):  # slow or no internet: show the page anyway
                 pass
             t = db.get_title(title_id)
             if not t and any_media:  # merged into an older entry of the same movie/series
@@ -449,12 +449,15 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         except Exception as e:  # noqa: BLE001 - e.g. unique (kind, norm_name) clash
             raise ApiError(400, str(e)) from e
         tmdb = scanner.tmdb
-        if payload.get("tmdb_id") and tmdb:
-            m = re.search(r"\d+", str(payload["tmdb_id"]))
-            if m:
-                await tmdb.enrich_title(db, db.get_title(title_id), tmdb_id=int(m.group()))
-        elif payload.get("refresh_tmdb") and tmdb:
-            await tmdb.enrich_title(db, db.get_title(title_id))
+        try:
+            if payload.get("tmdb_id") and tmdb:
+                m = re.search(r"\d+", str(payload["tmdb_id"]))
+                if m:
+                    await tmdb.enrich_title(db, db.get_title(title_id), tmdb_id=int(m.group()))
+            elif payload.get("refresh_tmdb") and tmdb:
+                await tmdb.enrich_title(db, db.get_title(title_id))
+        except httpx.TransportError as e:
+            raise ApiError(503, "אין חיבור לאתר TMDB כרגע. בדוק את האינטרנט ונסה שוב.") from e
         return ok(db.get_title(title_id))
 
     async def merge_title(request: Request):
