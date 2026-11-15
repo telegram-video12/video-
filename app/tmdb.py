@@ -67,8 +67,37 @@ class TMDB:
                     return [item]
         return []
 
+    async def _search_smart(self, client, media_type: str, name: str, duration: float | None) -> list:
+        """Name has extra words that TMDB does not know ("אבא גנוב 1 גוזלן"): drop one or two words from the
+        end or the start and search again. Accepted only when what is left is EXACTLY a TMDB name, and for a
+        movie only when the file's length fits the movie's length - so different movies are never joined."""
+        from .parser import normalize
+
+        words = name.split()
+        if len(words) < 2:
+            return []
+        variants = [words[:-1], words[:-2], words[1:], words[2:]]
+        for v in variants:
+            query = " ".join(v)
+            if not v or len(normalize(query)) < 2:
+                continue
+            res = (await self._get(client, f"/search/{media_type}", query=query, language="he-IL")).get("results") or []
+            want = normalize(query)
+            for item in res[:5]:
+                names = {normalize(item.get("name") or item.get("title") or ""),
+                         normalize(item.get("original_name") or item.get("original_title") or "")}
+                if want not in names:
+                    continue
+                if media_type == "movie" and duration:
+                    det = await self._get(client, f"/movie/{item['id']}")
+                    runtime = (det.get("runtime") or 0) * 60
+                    if runtime and abs(runtime - duration) > max(0.12 * runtime, 8 * 60):
+                        continue  # same name, different length: probably another movie
+                return [item]
+        return []
+
     async def lookup(self, kind: str, name: str, year: int | None = None, tmdb_id: int | None = None,
-                     have_overview: bool = False) -> dict | None:
+                     have_overview: bool = False, duration: float | None = None) -> dict | None:
         media_type = "tv" if kind == "series" else "movie"
         async with self._client_ctx() as client:
             if tmdb_id:  # already matched: ONE call brings details + cast
@@ -85,6 +114,8 @@ class TMDB:
                     res = (await self._get(client, f"/search/{media_type}", **params)).get("results") or []
                 if not res and year:
                     res = await self._search_trimmed(client, media_type, name, year)
+                if not res:
+                    res = await self._search_smart(client, media_type, name, duration)
                 if not res:
                     return None
                 item = res[0]
@@ -117,8 +148,10 @@ class TMDB:
 
     async def enrich_title(self, db, title: dict, tmdb_id: int | None = None) -> bool:
         try:
+            longest = db.q1("SELECT MAX(duration) AS d FROM media WHERE title_id = ?", (title["id"],))
             meta = await self.lookup(title["kind"], title["name"], title.get("year"), tmdb_id,
-                                     have_overview=bool(title.get("overview")))
+                                     have_overview=bool(title.get("overview")),
+                                     duration=(longest or {}).get("d"))
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:  # key revoked/replaced: no point trying the rest
                 if not self.stopped:

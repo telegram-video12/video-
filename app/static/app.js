@@ -1297,7 +1297,7 @@ function telegramPanel(st) {
 }
 
 const SETTINGS_SECTIONS = [['sec-tg', '📡', 'חיבור לטלגרם'], ['sec-chats', '📋', 'קבוצות וערוצים'], ['sec-scan', '🔄', 'סריקה'],
-  ['sec-sync', '🔗', 'סנכרון מכשירים'], ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים ותקצירים'], ['sec-pw', '🔒', 'סיסמה ויציאה']];
+  ['sec-sync', '🔗', 'סנכרון מכשירים'], ['sec-dups', '👯', 'כפילויות אפשריות'], ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים ותקצירים'], ['sec-pw', '🔒', 'סיסמה ויציאה']];
 
 async function pageSettings(section) {
   // phone: a menu of topics, each opens on its own screen (#/more/sec-…); computer: all topics with a side menu
@@ -1310,6 +1310,7 @@ async function pageSettings(section) {
     'sec-tg': auth ? `✓ מחובר${st.me?.name ? ' · ' + st.me.name : ''}` : 'לא מחובר',
     'sec-scan': st.scan?.running ? '⏳ סורק עכשיו' : '',
     'sec-sync': st.sync?.peer ? st.sync.peer : 'כבוי',
+    'sec-dups': st.duplicates ? `${st.duplicates} לבדיקה` : 'אין',
     'sec-tmdb': !st.tmdb ? 'לא מוגדר' : st.tmdb_status?.running ? `⏳ ${st.tmdb_status.done.toLocaleString('he-IL')} מתוך ${st.tmdb_status.total.toLocaleString('he-IL')}` : '✓ פעיל',
   };
 
@@ -1342,6 +1343,10 @@ async function pageSettings(section) {
         <button class="btn primary" id="sync-now">שמור וסנכרן עכשיו</button>
       </div>
       <div id="sync-status" class="muted" style="margin-top:10px;font-size:13px">${syncLine(st.sync)}</div>
+    </div>
+    <div class="panel" id="sec-dups"><h3>כפילויות אפשריות</h3>
+      <p class="muted" style="margin-top:0">כאן מופיעים סרטים וסדרות שנראים אותו דבר עם מילה נוספת בשם, והאתר לא איחד אותם לבד כי לא היה בטוח. לכל זוג: <b>אחד</b> מאחד רק אותם, <b>מחק בכל האתר</b> מוחק את המילה המיותרת מכל השמות, <b>לא אותו דבר</b> מסתיר את ההצעה.</p>
+      <div id="dups"><div class="spinner"></div></div>
     </div>
     <div class="panel" id="sec-clean"><h3>ניקוי שמות</h3>
       <p class="muted" style="margin-top:0">האתר מזהה לבד חתימות של קבוצות (כמו "קינג סרט") ומוחק אותן משמות הסרטים, כדי שכל סרט יופיע פעם אחת. אם נשארה חתימה, כתוב אותה כאן, <b>שורה לכל ביטוי</b>, והיא תימחק מכל השמות.</p>
@@ -1426,6 +1431,50 @@ async function pageSettings(section) {
     out.innerHTML = syncLine({peer: r.peer, last: r});
     libraryCache = null;
   }, $('#sync-status'));
+  // --- possible duplicates
+  const drawDups = async () => {
+    const box = $('#dups');
+    if (!box) return;
+    let pairs;
+    try { pairs = (await api('/api/duplicates')).pairs; } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    if (!pairs.length) { box.innerHTML = '<div class="note">✓ אין כרגע כפילויות לבדיקה.</div>'; return; }
+    const one = (x, kind) => `<a class="dup-t" href="#/title/${x.id}"><div class="poster">${img(x.poster)}</div>
+      <div><b>${esc(x.name)}</b><span>${[x.year, kind === 'movie' && x.duration ? fmtDur(x.duration) : '', x.files === 1 ? 'קובץ אחד' : `${x.files} קבצים`].filter(Boolean).map((y) => `<bdi>${esc(y)}</bdi>`).join(' · ')}</span></div></a>`;
+    box.innerHTML = `<div class="muted" style="font-size:13px;margin-bottom:8px">${pairs.length === 1 ? 'זוג אחד' : pairs.length + ' זוגות'}</div>` + pairs.map((p) => `
+      <div class="dup" data-key="${p.key}">
+        <div class="dup-pair">${one(p.a, p.kind)}<span class="dup-eq">≈</span>${one(p.b, p.kind)}</div>
+        <div class="dup-acts">
+          <button class="btn small primary" data-join="${p.b.id}" data-into="${p.a.id}">אחד</button>
+          <button class="btn small" data-strip="${esc(p.extra)}">מחק "${esc(p.extra)}" בכל האתר</button>
+          <button class="btn small ghost" data-dismiss="${p.key}">לא אותו דבר</button>
+        </div></div>`).join('');
+  };
+  $('#dups')?.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const row = b.closest('.dup');
+    run(async () => {
+      if (b.dataset.join) {
+        await api(`/api/titles/${b.dataset.join}/merge`, {method: 'POST', body: {into: +b.dataset.into}});
+        row.remove();
+      } else if (b.dataset.dismiss) {
+        await api('/api/duplicates/dismiss', {method: 'POST', body: {key: b.dataset.dismiss}});
+        row.remove();
+      } else if (b.dataset.strip) {
+        const word = b.dataset.strip;
+        if (!confirm(`למחוק את "${word}" מכל השמות באתר? (אפשר לבטל אחר כך ב"ניקוי שמות")`)) return;
+        const list = (st.strip_phrases || []).concat(word);
+        st.strip_phrases = list;
+        await api('/api/settings', {method: 'POST', body: {strip_phrases: list.join('\n')}});
+        const ta = $('#strip-phrases');
+        if (ta) ta.value = list.join('\n');
+        $app.querySelectorAll(`[data-strip="${CSS.escape(word)}"]`).forEach((x) => x.closest('.dup')?.remove());
+      }
+      libraryCache = null;
+    });
+  });
+  if (!sec || sec[0] === 'sec-dups' || matchMedia('(min-width: 1000px)').matches) drawDups();
+
   $('#save-phrases').onclick = () => run(async () => {
     await api('/api/settings', {method: 'POST', body: {strip_phrases: $('#strip-phrases').value}});
     libraryCache = null;

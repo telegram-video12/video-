@@ -350,7 +350,13 @@ class Scanner:
 
     def start_tmdb(self) -> None:
         if self.tmdb and not self.tmdb.status["running"]:
-            self._tmdb_task = asyncio.create_task(self.tmdb.enrich_pending(self.db))
+            self._tmdb_task = asyncio.create_task(self._tmdb_then_join())
+
+    async def _tmdb_then_join(self) -> None:
+        await self.tmdb.enrich_pending(self.db)
+        from .library import merge_similar_movies  # names got cleaner: join movies that now match
+
+        await asyncio.to_thread(merge_similar_movies, self.db)
 
     async def scan(self, chat_ids: list[int] | None = None) -> dict:
         if self._lock.locked():

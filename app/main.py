@@ -27,6 +27,7 @@ from starlette.staticfiles import StaticFiles
 from . import crypto_boost
 from .config import Settings
 from .db import Database, quality_of
+from .library import possible_duplicates
 from .parser import normalize
 from .telegram import Scanner, TelegramService
 from .tmdb import TMDB
@@ -331,6 +332,23 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "at": h["updated_at"], "pic": h["backdrop"] or thumb_url(h["media_id"]),
         } for h in db.history()]
         return ok({"watchlist": watchlist_cards(), "history": history, "stats": db.watch_stats()})
+
+    async def duplicates(request: Request):
+        """Titles that look like the same movie/series with extra words, for you to decide."""
+        return ok({"pairs": possible_duplicates(db)})
+
+    async def duplicates_dismiss(request: Request):
+        key = str((await body(request)).get("key") or "")
+        if not re.fullmatch(r"\d+-\d+", key):
+            raise ApiError(400, "bad key")
+        try:
+            done = json.loads(db.get_pref("dup_dismissed") or "[]")
+        except ValueError:
+            done = []
+        if key not in done:
+            done.append(key)
+            db.set_pref("dup_dismissed", json.dumps(done))
+        return ok()
 
     async def watchlist_set(request: Request):
         title_id = request.path_params["id"]
@@ -688,6 +706,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "chats": db.chats(),
             "scan_interval_minutes": settings.scan_interval_minutes,
             "strip_phrases": db.strip_phrases(),
+            "duplicates": len(possible_duplicates(db)),
             "sync": {
                 "peer": db.get_pref("sync_peer"),
                 "this_device": this_device_address(),
@@ -825,6 +844,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         try:
             await asyncio.to_thread(migrate_norms, db)
             await asyncio.to_thread(repair, db)
+            from .library import merge_similar_movies, retry_unmatched
+
+            retry_unmatched(db)
+            await asyncio.to_thread(merge_similar_movies, db)
         except Exception as e:  # noqa: BLE001 - never take the site down for this; show it in Settings
             log.exception("library upkeep failed")
             scanner.status["error"] = f"סידור הספרייה נכשל: {type(e).__name__}: {e}"
@@ -908,6 +931,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/library", library), R("/api/genres", genres_list), R("/api/home", home_rows), R("/api/random", random_pick),
         R("/api/mylist", my_list), R("/api/watchlist/{id:int}", watchlist_set, methods=["POST"]),
         R("/api/history/hide", history_hide, methods=["POST"]),
+        R("/api/duplicates", duplicates), R("/api/duplicates/dismiss", duplicates_dismiss, methods=["POST"]),
         R("/api/watched-many", watched_many, methods=["POST"]),
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),
         R("/api/titles/{id:int}/merge", merge_title, methods=["POST"]),

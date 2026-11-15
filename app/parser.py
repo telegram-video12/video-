@@ -37,7 +37,8 @@ JUNK_RE = re.compile(
     r"\b(2160p|1080p|720p|576p|480p|360p|4k|uhd|hdr|web[-. ]?dl|webrip|web|bluray|blu-ray|brrip|bdrip|"
     r"hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|avc|aac\d?(?:\.\d)?|ac3|dd5\.1|ddp?5\.1|10bit|"
     r"proper|repack|extended|unrated|remastered|multi|dual|subs?|hebsub|heb|eng|nf|amzn|dsnp|hmax|atvp|"
-    r"מתורגם|תרגום|כתוביות|מדובב|באיכות|גבוהה|hd|sd|fhd|mkv|mp4|avi)\b",
+    r"מתורגם|תרגום|כתוביות|מדובב|באיכות|גבוהה|hd|sd|fhd|mkv|mp4|avi|"
+    r"2160|1080|720|480|br|bd|dvd|dvdscr|vod|hdrip|hdcam|camrip|hdtc|1080i)\b",
     re.I,
 )
 

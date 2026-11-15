@@ -7,7 +7,7 @@ import time
 
 from . import branding as brand
 from .db import Database
-from .parser import normalize, parse_media
+from .parser import normalize, parse_media, words
 
 log = logging.getLogger(__name__)
 MIN_UNKNOWN_DURATION_SIZE = 50 * 1024 * 1024  # files without duration: keep only if >= 50MB
@@ -122,12 +122,98 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: 
     return len(moves)
 
 
+# ------------------------------------------------------------ same title, extra words
+def _similar_pairs(db: Database) -> list[dict]:
+    """Titles whose name is another title's name plus one or two extra words at the start or the end
+    ("אבא גנוב 1" / "אבא גנוב 1 גוזלן"). Extra words with digits never count ("אבא גנוב" / "אבא גנוב 2")."""
+    rows = db.q("""SELECT t.id, t.kind, t.name, t.year, t.tmdb_id, t.poster,
+                          MAX(m.duration) AS duration, MAX(m.manual) AS manual, COUNT(m.id) AS files
+                   FROM titles t JOIN media m ON m.title_id = t.id AND m.hidden = 0 GROUP BY t.id""")
+    index: dict[tuple, list[dict]] = {}
+    for r in rows:
+        r["_w"] = tuple(words(r["name"] or "").split())
+        if r["_w"]:
+            index.setdefault((r["kind"], r["_w"]), []).append(r)
+    pairs, seen = [], set()
+    for r in rows:
+        w = r["_w"]
+        if len(w) < 2:
+            continue
+        for cut in (-1, -2, 1, 2):
+            short, extra = (w[:cut], w[cut:]) if cut < 0 else (w[cut:], w[:cut])
+            if not short or len("".join(short)) < 2 or any(ch.isdigit() for x in extra for ch in x):
+                continue
+            for o in index.get((r["kind"], short), []):
+                if o["id"] == r["id"] or (o["id"], r["id"]) in seen:
+                    continue
+                if o["year"] and r["year"] and abs(o["year"] - r["year"]) > 1:
+                    continue
+                if o["tmdb_id"] and r["tmdb_id"] and o["tmdb_id"] != r["tmdb_id"]:
+                    continue
+                seen.add((o["id"], r["id"]))
+                pairs.append({"short": o, "long": r, "extra": " ".join(extra)})
+    return pairs
+
+
+def _same_length(a: dict, b: dict) -> bool:
+    da, db_ = a["duration"], b["duration"]
+    return bool(da and db_ and abs(da - db_) <= max(0.03 * max(da, db_), 90))
+
+
+def merge_similar_movies(db: Database) -> int:
+    """A movie that is another movie's name plus a word, with a file of the same length, is the same
+    movie: join them (all uploads stay inside as versions). Series are only suggested, never joined here."""
+    merged = 0
+    for p in _similar_pairs(db):
+        a, b = p["short"], p["long"]
+        if a["kind"] != "movie" or a["manual"] or b["manual"] or not _same_length(a, b):
+            continue
+        # Only ONE extra word, and TMDB must not know the longer name as a movie of its own
+        # ("הנוקמים" / "הנוקמים עידן אולטרון" are two movies of almost the same length).
+        if len(p["extra"].split()) != 1 or (b["tmdb_id"] and b["tmdb_id"] != a["tmdb_id"]):
+            continue
+        if not db.get_title(a["id"]) or not db.get_title(b["id"]):
+            continue  # one of them was joined already in this round
+        db.merge_titles(b["id"], a["id"])
+        merged += 1
+    if merged:
+        log.info("%d movies with extra words in the name joined with the same movie", merged)
+    return merged
+
+
+def possible_duplicates(db: Database) -> list[dict]:
+    """What is left for you to decide: looks like the same title but was not joined automatically."""
+    try:
+        dismissed = set(json.loads(db.get_pref("dup_dismissed") or "[]"))
+    except ValueError:
+        dismissed = set()
+    out = []
+    for p in _similar_pairs(db):
+        a, b = p["short"], p["long"]
+        key = f"{min(a['id'], b['id'])}-{max(a['id'], b['id'])}"
+        if key in dismissed:
+            continue
+        out.append({"key": key, "kind": a["kind"], "extra": p["extra"],
+                    "a": {k: a[k] for k in ("id", "name", "year", "poster", "files", "duration")},
+                    "b": {k: b[k] for k in ("id", "name", "year", "poster", "files", "duration")}})
+    return out
+
+
+def retry_unmatched(db: Database) -> None:
+    """Once after the smarter TMDB search arrived: look again for titles TMDB did not find before."""
+    if db.get_pref("tmdb_retry") == "smart1":
+        return
+    db.x("UPDATE titles SET tmdb_checked = 0 WHERE tmdb_id IS NULL", soft=True)
+    db.set_pref("tmdb_retry", "smart1")
+
+
 def regroup_all(db: Database, force: bool = False) -> int:
     """Re-learn every channel's signature (the whole library is used to confirm them).
     force: also re-file when only the name parser itself changed (after an update)."""
     corpus = _corpus(db)
     moved = sum(regroup_chat(db, c["id"], corpus, force) for c in db.chats())
     moved += db.merge_by_name()
+    moved += merge_similar_movies(db)
     db.x("UPDATE media SET auto_norm = (SELECT norm_name FROM titles t WHERE t.id = media.title_id) "
          "WHERE auto_norm IS NULL AND manual = 0")
     repair(db)
