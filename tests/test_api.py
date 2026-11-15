@@ -365,3 +365,47 @@ def test_library_paging_and_search(client):
     found = client.get("/api/library?q=" + "מספר 14").json()
     assert {t["name"] for t in found["titles"]} >= {"סרט מספר 14"} or {t["name"] for t in found["titles"]} >= {"מספר 14"}
     assert found["total"] == 11  # 14, 140..149
+
+
+MOVIES = ["ספיידרמן 3", "ספיידרמן: השיבה הביתה", "ספיידרמן אין דרך הביתה", "ספיידרמן: רחוק מהבית",
+          "הארי פוטר ואבן החכמים", "הארי פוטר וחדר הסודות", "מלך האריות", "שר הטבעות", "טיטאניק", "אווטאר",
+          "התחלה", "מטריקס", "גלדיאטור", "פורסט גאמפ", "האביר האפל", "אינטרסטלר", "ג'וקר", "הנוקמים",
+          "מועדון קרב", "רשימת שינדלר", "הסנדק", "צעצוע של כאסח", "שרק", "מוצאים את נמו", "למעלה"]
+
+
+def test_channel_signatures_are_removed(client):
+    import asyncio
+    login(client)
+    tg = client.app.state.tg
+    chats = {
+        -1: lambda n, i: f"קינג סרט {n} ({2000 + i % 20})",
+        -2: lambda n, i: f"מדיה VOD {n}\nהועלה ע\"י יחיאל",
+        -3: lambda n, i: f"🎬 חנואל סרטים 🎬\n{n} 1080p",
+        -4: lambda n, i: f"{n} 720p",
+    }
+    msgs = {cid: [(i + 1, VideoMessage(cid, i + 1, fmt(n, i), "", len(FILE), "video/mp4", 6000, None, None, 1000 + i))
+                  for i, n in enumerate(MOVIES)] for cid, fmt in chats.items()}
+
+    async def iter_messages(chat_id, min_id=0):
+        for mid, v in msgs[chat_id]:
+            if mid > min_id:
+                yield mid, v
+    tg.iter_messages = iter_messages
+    client.post("/api/chats", json={"chats": [{"id": c, "title": f"ערוץ {c}", "enabled": True} for c in chats]})
+    asyncio.run(client.app.state.scanner.scan())
+    lib = client.get("/api/library?limit=200").json()
+    names = sorted(t["name"] for t in lib["titles"])
+    assert lib["total"] == len(MOVIES), names
+    spider = client.get("/api/library?q=ספיידרמן").json()
+    assert spider["total"] == 4
+    for t in spider["titles"]:
+        detail = client.get(f"/api/titles/{t['id']}").json()
+        assert len(detail["media"]) == 1 and detail["media"][0]["versions"] == 4
+        assert detail["media"][0]["quality"] == 1080          # the 1080p upload is the one that plays
+    assert "הארי פוטר ואבן החכמים" in names                  # a real shared word is not a signature
+    # a later upload in the same channel is cleaned right away
+    msgs[-1].append((100, VideoMessage(-1, 100, "קינג סרט טיטאניק 4K", "", len(FILE), "video/mp4", 6000, None, None, 5000)))
+    asyncio.run(client.app.state.scanner.scan())
+    titanic = client.get("/api/library?q=טיטאניק").json()["titles"]
+    assert len(titanic) == 1
+    assert client.get(f"/api/titles/{titanic[0]['id']}").json()["media"][0]["quality"] == 2160

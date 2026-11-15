@@ -89,6 +89,11 @@ class Database:
             self.conn.execute("ALTER TABLE chats ADD COLUMN default_season INTEGER")
         if "season_label" not in cols:
             self.conn.execute("ALTER TABLE chats ADD COLUMN season_label TEXT")
+        if "branding" not in cols:
+            self.conn.execute("ALTER TABLE chats ADD COLUMN branding TEXT")
+        mcols = {r[1] for r in self.conn.execute("PRAGMA table_info(media)")}
+        if "manual" not in mcols:  # set when you fix an episode/movie by hand; automatic regrouping skips it
+            self.conn.execute("ALTER TABLE media ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
 
     # ---------------------------------------------------------------- helpers
     def q(self, sql: str, args: tuple | list = ()) -> list[dict[str, Any]]:
@@ -255,7 +260,7 @@ class Database:
         )
 
     def update_media(self, media_id: int, **fields: Any) -> None:
-        allowed = {"title_id", "season", "episode", "hidden"}
+        allowed = {"title_id", "season", "episode", "hidden", "manual"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -407,6 +412,10 @@ class Database:
             return None, None
         i = keys.index(key)
         return (items[i - 1] if i > 0 else None), (items[i + 1] if i + 1 < len(items) else None)
+
+    def find_title_by_name_year(self, kind: str, name: str, year: int | None, exclude: int) -> dict | None:
+        return self.q1("SELECT * FROM titles WHERE kind = ? AND name = ? AND year IS ? AND tmdb_id IS NOT NULL "
+                       "AND id != ? ORDER BY id", (kind, name, year, exclude))
 
     def find_title_by_tmdb(self, kind: str, tmdb_id: int, exclude: int) -> dict | None:
         return self.q1("SELECT * FROM titles WHERE kind = ? AND tmdb_id = ? AND id != ? ORDER BY id",

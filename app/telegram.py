@@ -212,9 +212,10 @@ class Scanner:
     """Walks enabled chats and adds new videos to the library."""
 
     def __init__(self, db, tg: TelegramService, tmdb, min_duration: int):
-        from .library import add_video  # local import to avoid a cycle
+        from .library import add_video, regroup_chat  # local import to avoid a cycle
 
         self._add_video = add_video
+        self._regroup = regroup_chat
         self.db = db
         self.tg = tg
         self.tmdb = tmdb
@@ -248,6 +249,9 @@ class Scanner:
                             self.db.set_chat_scanned(chat["id"], last_seen)
                     self.db.set_chat_scanned(chat["id"], last_seen)
                     log.info("scanned chat %s: %d messages checked", chat["id"], count)
+                    if count or chat.get("branding") is None:
+                        self.status["chat"] = chat["title"] + " (מסדר שמות)"
+                        await asyncio.to_thread(self._regroup, self.db, chat["id"])
                 if self.tmdb:  # posters are fetched in the background; scanning is not held up
                     self.start_tmdb()
             except Exception as e:  # noqa: BLE001 - surface any error in the UI

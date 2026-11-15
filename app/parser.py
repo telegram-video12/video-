@@ -54,8 +54,19 @@ class ParsedInfo:
     year: int | None = None
 
 
+UPLOADER_RE = re.compile(
+    r"(?:הועל[הו]|עלה|תורגם|סונכרן|קידוד|הוכן)\s+(?:ע[\"״׳']?\s?י|על\s+ידי|באדיבות)\b.*$"  # "הועלה ע"י יחיאל ..."
+    r"|באדיבות\s+\S+.*$"
+    r"|\b(?:מדיה\s+)?VOD\b"
+    r"|(?:ל)?צפי(?:י)?ה\s+ישירה"
+    r"|\bfull\s*hd\b",
+    re.I,
+)
+
+
 def clean_name(text: str) -> str:
     text = VIDEO_EXT_RE.sub("", text)
+    text = UPLOADER_RE.sub(" ", text)
     text = text.replace("#", " ")
     text = re.sub(r"@\w+", " ", text)  # channel mentions
     text = re.sub(r"https?://\S+", " ", text)
@@ -153,7 +164,12 @@ def _parse_one(text: str) -> ParsedInfo | None:
     return ParsedInfo(name=name, kind="movie", year=year)
 
 
-def parse_media(caption: str | None, file_name: str | None, fallback_name: str = "") -> ParsedInfo:
+def parse_media(caption: str | None, file_name: str | None, fallback_name: str = "",
+                branding: dict | None = None) -> ParsedInfo:
+    """branding: the channel's own signature (see branding.py), removed before parsing."""
+    if branding:
+        from .branding import strip_caption
+        caption = strip_caption(caption, branding)
     caption = (caption or "").strip()
     file_name = (file_name or "").strip()
 
@@ -177,6 +193,9 @@ def parse_media(caption: str | None, file_name: str | None, fallback_name: str =
         best = next((c for c in candidates if c.name), None)
     if best is None:
         best = ParsedInfo(name=fallback_name or "ללא שם", kind="movie")
+    if branding:
+        from .branding import strip_name
+        best.name = strip_name(best.name, branding)
     if not best.name:
         best.name = fallback_name or "ללא שם"
     return best

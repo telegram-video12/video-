@@ -304,6 +304,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             name = str(payload["move_to_name"]).strip()
             kind = payload.get("kind") if payload.get("kind") in ("series", "movie") else db.get_title(m["title_id"])["kind"]
             fields["title_id"] = db.get_or_create_title(kind, name, normalize(name) or name, None)
+        if {"season", "episode", "title_id"} & fields.keys():
+            fields["manual"] = 1
         db.update_media(media_id, **fields)
         db.delete_empty_titles()
         return ok(media_out(db.get_media(media_id)))

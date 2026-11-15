@@ -102,6 +102,8 @@ class TMDB:
         # The same movie/series under another name (e.g. Hebrew vs English caption) -> one entry.
         # Always merge the newer entry into the older one so concurrent lookups agree.
         other = db.find_title_by_tmdb(title["kind"], meta["tmdb_id"], title["id"])
+        if not other and meta["tmdb_name"]:  # e.g. the extended cut has its own TMDB entry
+            other = db.find_title_by_name_year(title["kind"], meta["tmdb_name"], meta["year"], title["id"])
         if other:
             src, dst = max(other["id"], title["id"]), min(other["id"], title["id"])
             if db.get_title(src) and db.get_title(dst):
