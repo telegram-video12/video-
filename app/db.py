@@ -320,7 +320,7 @@ class Database:
     def list_titles(self) -> list[dict]:
         return self.q(
             f"""
-            SELECT t.id, t.kind, t.name, t.year, t.poster, t.overview, t.genres, t.rating, t.original_name,
+            SELECT t.id, t.kind, t.name, t.year, t.poster, t.backdrop, t.overview, t.genres, t.rating, t.original_name,
                    COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,
                    MAX(m.added_at) AS last_added,

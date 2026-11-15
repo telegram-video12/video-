@@ -67,7 +67,7 @@ async function route() {
   const tab = TAB_OF[first] ?? lastTab;
   lastTab = tab;
   $tabbar.hidden = first === 'watch';
-  $tabbar.querySelectorAll('a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
+  document.querySelectorAll('#tabbar a, #topnav [data-tab]').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
   document.body.classList.toggle('in-player', first === 'watch');
   const st = pageState[hash] || (pageState[hash] = {});
   window.scrollTo(0, 0);
@@ -93,7 +93,7 @@ $tabbar.addEventListener('click', (e) => {
 });
 
 function pageHeader(title, sub = '', {logo = false} = {}) {
-  return `<header class="phead">
+  return `<header class="phead${logo ? ' home-head' : ''}">
     <div class="phead-title">${logo ? '<span class="logo"><i></i>הספרייה שלי</span>' : `<h1>${esc(title)}</h1>${sub ? `<div class="phead-sub">${sub}</div>` : ''}`}</div>
     <a class="iconbtn" href="#/search" aria-label="חיפוש">🔍</a>
   </header>`;
@@ -119,14 +119,50 @@ async function pageHome() {
   libraryCache = all;
   if (!all.counts.all) { $app.innerHTML = pageHeader('', '', {logo: true}) + emptyLibrary(); return; }
   const cont = all.continue || [];
-  $app.innerHTML = pageHeader('', '', {logo: true}) +
+  const fresh = [...series.titles, ...movies.titles].find((t) => t.backdrop);
+  const top = cont[0] || (fresh ? {title: fresh} : null);
+  $app.innerHTML = pageHeader('', '', {logo: true}) + (top ? banner(top) : '') +
     (cont.length ? rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`) : '') +
     (series.titles.length ? rowSection('סדרות שנוספו לאחרונה', '#/series', `<div class="hrow">${series.titles.map(posterCard).join('')}</div>`) : '') +
     (movies.titles.length ? rowSection('סרטים שנוספו לאחרונה', '#/movies', `<div class="hrow">${movies.titles.map(posterCard).join('')}</div>`) : '');
 }
 
 function rowSection(title, more, body) {
-  return `<section class="rsec"><div class="rsec-head"><h2>${esc(title)}</h2>${more ? `<a href="${more}">הכל ›</a>` : ''}</div>${body}</section>`;
+  const arrows = body.includes('class="hrow"')
+    ? '<button class="rowarrow next" data-scroll="1" aria-label="הבא">‹</button><button class="rowarrow prev" data-scroll="-1" aria-label="הקודם">›</button>' : '';
+  return `<section class="rsec"><div class="rsec-head"><h2>${esc(title)}</h2>${more ? `<a href="${more}">הכל ›</a>` : ''}</div><div class="rwrap">${arrows}${body}</div></section>`;
+}
+// row arrows (computer): scroll a row by one screen; in right-to-left rows "next" moves left
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-scroll]');
+  if (!b) return;
+  const row = b.parentElement.querySelector('.hrow');
+  row.scrollBy({left: -Number(b.dataset.scroll) * row.clientWidth * 0.9, behavior: 'smooth'});
+});
+
+function banner(item) {
+  // the big picture at the top of the home page: what you are watching, or something new
+  const t = item.title, m = item.media;
+  const pic = t.backdrop || t.poster || (m && m.thumb);
+  const facts = [t.year, (t.genres || []).slice(0, 2).join(', '), t.rating ? `⭐ ${t.rating}` : ''].filter(Boolean).map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ');
+  const resume = m && item.state;
+  const left = m && m.duration ? Math.max(0, m.duration - (item.position || 0)) : 0;
+  const href = m ? `#/watch/${m.id}` : `#/title/${t.id}`;
+  return `<section class="banner${pic ? '' : ' banner-noimg'}">
+    <div class="banner-img">${pic ? img(pic) : ''}</div>
+    <div class="banner-text">
+      <div class="kicker">${resume ? '▶ המשך מאיפה שעצרת' : '✨ חדש בספרייה'}</div>
+      <h1>${esc(t.name)}</h1>
+      ${facts ? `<div class="facts">${facts}</div>` : ''}
+      ${t.overview ? `<p class="ov">${esc(t.overview)}</p>` : ''}
+      ${resume ? `<div class="where">${esc(epLong(m) || '')}${left ? `${epLong(m) ? ' · ' : ''}נשארו ${fmtDur(left)}` : ''}</div>
+        <div class="bar banner-bar"><i style="width:${item.state === 'next' ? 0 : pct({...m, position: item.position})}%"></i></div>` : ''}
+      <div class="banner-actions">
+        <a class="btn primary" href="${href}">▶ ${resume ? 'המשך צפייה' : 'צפה עכשיו'}</a>
+        <a class="btn ghost" href="#/title/${t.id}">ⓘ פרטים</a>
+      </div>
+    </div>
+  </section>`;
 }
 
 function skeletonRows() {
@@ -215,7 +251,7 @@ async function pageList(kind, st) {
   const query = (offset, limit) => `/api/library?kind=${kind}&state=${f.state}&decade=${f.decade}&genres=${encodeURIComponent((f.genres || []).join(','))}&sort=${sortOf()}&offset=${offset}&limit=${limit}&nocont=1`;
   const label = (list, v) => (list.find(([k]) => k === v) || list[0])[1];
 
-  const shell = (sub, body) => pageHeader(title, sub) + `
+  const shell = (sub, body) => `<div class="listhead">` + pageHeader(title, sub) + `
     <div class="filters">
       <div class="chips">${states.map(([v, l]) => `<button class="tab ${f.state === v ? 'active' : ''}" data-state="${v}">${l}</button>`).join('')}</div>
       <div class="chips">
@@ -223,7 +259,7 @@ async function pageList(kind, st) {
         <button class="tab ${f.decade ? 'set' : ''}" data-pick="decade">${f.decade ? esc(label(DECADES, f.decade)) : 'שנה'} ▾</button>
         <button class="tab" data-pick="sort">מיון: ${esc(label(SORTS, sortOf()))} ▾</button>
       </div>
-    </div>` + body;
+    </div></div>` + body;
 
   const render = async (fresh) => {
     if (fresh) { st.loaded = 0; st.scrollY = 0; }
@@ -444,16 +480,19 @@ async function pageTitle(id) {
         </div>
       </div>
     </section>
+    <div class="title-grid"><aside class="title-side">
     ${resume ? `<a class="btn primary wide" href="#/watch/${resume.media.id}">▶ ${esc(resumeLabel)}</a>` : ''}
     ${t.overview ? `<p class="overview-text clamp" id="overview">${esc(t.overview)}</p>
       ${t.overview.length > 160 ? '<button class="linkbtn" id="more-overview">קרא עוד ▾</button>' : ''}` : ''}
     ${cast.length ? `<div class="cast">${cast.map((c) => `<div class="castm"><div class="avatar">${c.photo ? img(c.photo) : `<span>${esc((c.name || '?')[0])}</span>`}</div><div class="cn">${esc(c.name)}</div></div>`).join('')}</div>` : ''}
+    </aside><section class="title-main">
     ${editMode ? editTitlePanel(t) : ''}
     ${isSeries && seasons.length > 1 ? `<div class="chips season-tabs">
         ${seasons.map((s) => `<button class="tab ${s === season ? 'active' : ''}" data-season="${s}">עונה ${s}${labels[s] ? ' · ' + esc(labels[s]) : ''}</button>`).join('')}
       </div>` : ''}
     ${isSeries ? '<div class="season-bar" id="season-bar"></div>' : ''}
-    <div class="episodes" id="eps"></div>`;
+    <div class="episodes" id="eps"></div>
+    </section></div>`;
 
   const seasonList = () => (isSeries ? media.filter((m) => (m.season ?? 1) === season && !m.hidden) : visible);
   const renderSeasonBar = () => {
@@ -642,7 +681,7 @@ async function pageWatch(id) {
   const isSeries = t.kind === 'series' && m.episode != null;
   document.title = `${t.name}${isSeries ? ' · ' + epLabel(m) : ''}`;
 
-  $app.innerHTML = `<div class="watch">
+  $app.innerHTML = `<div class="watch-layout"><div class="watch">
     <div class="player-wrap" id="pw">
       <video id="v" controls playsinline preload="metadata" src="/api/stream/${m.id}"></video>
     </div>
@@ -662,7 +701,19 @@ async function pageWatch(id) {
       ${versions.map((x) => `<a class="tab ${x.id === m.id ? 'active' : ''}" href="#/watch/${x.id}">${x.quality ? x.quality + 'p' : '?'} · ${fmtSize(x.size)}</a>`).join('')}
     </div>` : ''}
     <p class="muted" style="font-size:13px">קיצורי מקלדת: רווח = עצור/נגן · חיצים = 10 שניות · F = מסך מלא · N = הפרק הבא</p>
-  </div>`;
+  </div>${isSeries ? '<aside class="watch-side" id="wside"></aside>' : ''}</div>`;
+  if (isSeries) {  // computer: the season's episodes next to the player
+    api(`/api/titles/${t.id}`).then(({media}) => {
+      const side = $app.querySelector('#wside');
+      if (!side) return;
+      const list = media.filter((x) => (x.season ?? 1) === (m.season ?? 1));
+      side.innerHTML = `<h3>${esc(t.name)}</h3><div class="muted" style="margin-bottom:12px">עונה ${m.season ?? 1} · ${list.length} פרקים</div>` +
+        list.map((x) => `<a class="side-ep ${x.episode === m.episode ? 'on' : ''}" href="#/watch/${x.id}">
+          <div class="thumb">${img(x.thumb)}${pct(x) ? `<div class="bar"><i style="width:${pct(x)}%"></i></div>` : ''}</div>
+          <div><b>פרק ${x.episode}</b><div class="muted">${x.episode === m.episode ? 'מתנגן עכשיו' : x.completed ? '✓ נצפה' : fmtDur(x.duration)}</div></div></a>`).join('');
+      side.querySelector('.side-ep.on')?.scrollIntoView({block: 'center'});
+    }).catch(() => {});
+  }
 
   const v = $app.querySelector('#v');
   const wrap = $app.querySelector('#pw');
@@ -829,12 +880,17 @@ async function pageSettings() {
 
   $app.innerHTML = `
     ${pageHeader("עוד", "הגדרות, חיבורים וקבוצות")}
-    <div class="panel"><h3>חיבור לטלגרם</h3>${telegramPanel(st)}</div>
-    <div class="panel" ${auth ? '' : 'hidden'}><h3>קבוצות וערוצים</h3>
+    <div class="settings-layout"><nav class="settings-nav">
+      ${[['sec-tg', '📡', 'חיבור לטלגרם'], ['sec-chats', '📋', 'קבוצות וערוצים'], ['sec-scan', '🔄', 'סריקה'], ['sec-sync', '🔗', 'סנכרון מכשירים'],
+         ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים (TMDB)'], ['sec-pw', '🔒', 'סיסמה']]
+        .map(([id, e, l]) => `<button data-go="${id}"><span>${e}</span>${l}</button>`).join('')}
+    </nav><div class="settings-body">
+    <div class="panel" id="sec-tg"><h3>חיבור לטלגרם</h3>${telegramPanel(st)}</div>
+    <div class="panel" id="sec-chats" ${auth ? '' : 'hidden'}><h3>קבוצות וערוצים</h3>
       <p class="muted" style="margin-top:0">סמן את הקבוצות שמהן ייאספו הסדרות והסרטים.</p>
       <div id="chats">${auth ? '<div class="spinner"></div>' : ''}</div>
     </div>
-    <div class="panel" ${auth ? '' : 'hidden'}><h3>סריקה</h3>
+    <div class="panel" id="sec-scan" ${auth ? '' : 'hidden'}><h3>סריקה</h3>
       <div id="scan-status" class="muted"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         <button class="btn primary" id="scan">סרוק עכשיו</button>
@@ -842,7 +898,7 @@ async function pageSettings() {
       </div>
       <p class="muted" style="font-size:13px;margin-bottom:0">כל עוד האתר פועל, הוא סורק לבד ${st.scan_interval_minutes ? `כל ${st.scan_interval_minutes} דקות` : ''} ובכל הפעלה. סריקה מלאה לא מוחקת עריכות שעשית.</p>
     </div>
-    <div class="panel"><h3>סנכרון בין מכשירים</h3>
+    <div class="panel" id="sec-sync"><h3>סנכרון בין מכשירים</h3>
       <p class="muted" style="margin-top:0">מעביר את ההתקדמות בצפייה בין הפלאפון למחשב, כשהם באותו Wi-Fi. בכל סרט ופרק נשמרת הצפייה האחרונה, לא משנה איפה צפית.</p>
       ${st.sync.this_device ? `<div class="note" style="margin-bottom:12px">הכתובת של המכשיר הזה: <b dir="ltr">${esc(st.sync.this_device)}</b><br>אותה כותבים במכשיר השני.</div>` : ''}
       <label class="field">הכתובת של המכשיר השני (המחשב)
@@ -853,19 +909,19 @@ async function pageSettings() {
       </div>
       <div id="sync-status" class="muted" style="margin-top:10px;font-size:13px">${syncLine(st.sync)}</div>
     </div>
-    <div class="panel"><h3>ניקוי שמות</h3>
+    <div class="panel" id="sec-clean"><h3>ניקוי שמות</h3>
       <p class="muted" style="margin-top:0">האתר מזהה לבד חתימות של קבוצות (כמו "קינג סרט") ומוחק אותן משמות הסרטים, כדי שכל סרט יופיע פעם אחת. אם נשארה חתימה, כתוב אותה כאן, <b>שורה לכל ביטוי</b>, והיא תימחק מכל השמות.</p>
       <textarea class="input" id="strip-phrases" rows="5" style="width:100%;resize:vertical" placeholder="(ריק) כתוב כאן, למשל:&#10;קינג סרט&#10;פופקורן טיים">${esc((st.strip_phrases || []).join('\n'))}</textarea>
       <button class="btn" id="save-phrases" style="margin-top:8px">שמור וסדר מחדש</button>
     </div>
-    <div class="panel"><h3>פוסטרים ותקצירים (רשות)</h3>
+    <div class="panel" id="sec-tmdb"><h3>פוסטרים ותקצירים (רשות)</h3>
       <p class="muted" style="margin-top:0">${st.tmdb ? '✓ פעיל.' + (st.tmdb_status?.running ? ` ⏳ מוריד פוסטרים ותקצירים: ${st.tmdb_status.done.toLocaleString('he-IL')} מתוך ${st.tmdb_status.total.toLocaleString('he-IL')} (ממשיך ברקע)` : '') : 'כדי לקבל פוסטרים ותקצירים בעברית, הירשם בחינם ל-<a class="link" href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">TMDB</a>, ואז ב-<a class="link" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">הגדרות ← API</a> העתק את ה-<b>API Key</b>.'}</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input class="input" id="tmdb-key" dir="ltr" autocomplete="off" placeholder="${st.tmdb ? 'להחלפה: הדבק מפתח חדש' : 'API Key'}" style="flex:1;min-width:180px">
         <button class="btn" id="save-tmdb">שמור</button>
       </div>
     </div>
-    <div class="panel"><h3>סיסמת האתר</h3>
+    <div class="panel" id="sec-pw"><h3>סיסמת האתר</h3>
       <div class="form-grid">
         <input class="input" id="pw-cur" type="password" placeholder="סיסמה נוכחית">
         <input class="input" id="pw-new" type="password" placeholder="סיסמה חדשה">
@@ -874,9 +930,14 @@ async function pageSettings() {
         <button class="btn" id="change-pw">שנה סיסמה</button>
         <button class="btn danger" id="logout">יציאה מהאתר</button>
       </div>
-    </div>`;
+    </div>
+    </div></div>`;
 
   const $ = (sel) => $app.querySelector(sel);
+  $app.querySelectorAll('[data-go]').forEach((b) => b.onclick = () => {
+    $app.querySelectorAll('[data-go]').forEach((x) => x.classList.toggle('on', x === b));
+    document.getElementById(b.dataset.go)?.scrollIntoView({behavior: 'smooth', block: 'start'});
+  });
   const run = async (fn, errEl) => {
     if (errEl) errEl.textContent = '';
     try { await fn(); } catch (e) { if (errEl) errEl.textContent = e.message; else alert(e.message); }

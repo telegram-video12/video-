@@ -245,7 +245,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if offset == 0 and not q and not qp.get("nocont"):
             out["continue"] = [
                 {
-                    "title": {k: c["title"][k] for k in ("id", "name", "kind", "backdrop", "poster")},
+                    "title": {**{k: c["title"][k] for k in ("id", "name", "kind", "backdrop", "poster", "overview",
+                                                             "year", "rating")},
+                              "genres": json.loads(c["title"].get("genres") or "[]")},
                     "media": media_out(c["media"]),
                     "position": c["position"],
                     "state": c["state"],
