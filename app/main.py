@@ -581,6 +581,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             try:  # never let one slow picture hold the browser's connections (it only has a few)
                 data = await asyncio.wait_for(tg.thumbnail(m["chat_id"], m["msg_id"]), 12)
             except asyncio.TimeoutError:
+                asyncio.ensure_future(tg.heal())  # pictures stuck: maybe the file connection went stale
                 raise ApiError(504) from None  # try again next time; not marked as missing
             except Exception:  # noqa: BLE001
                 data = None

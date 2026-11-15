@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 CHUNK = 1024 * 1024  # Telegram serves files in 1 MiB-aligned parts
 MSG_CACHE_SECONDS = 20 * 60
+DOWNLOAD_STALL_SECONDS = 25  # no data from Telegram for this long -> reconnect
 VIDEO_EXTS = (".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv", ".flv")
 
 
@@ -146,6 +147,22 @@ class TelegramService:
             except Exception as e:  # noqa: BLE001 - try again next round
                 log.warning("Telegram reconnect failed: %s", e)
 
+    async def heal(self) -> None:
+        """Downloads stopped answering although we look connected (happens after the network dropped:
+        the extra connections used for files go stale). A fresh connection fixes it."""
+        if not self.client or time.time() - getattr(self, "_healed_at", 0) < 60:
+            return
+        if time.time() - getattr(self, "_data_at", 0) < 20:  # other downloads are moving: not stuck
+            return
+        self._healed_at = time.time()
+        log.warning("Telegram downloads are stuck - reconnecting")
+        try:
+            await asyncio.wait_for(self.client.disconnect(), 15)
+        except Exception:  # noqa: BLE001
+            pass
+        self._msg_cache.clear()
+        await self._ensure()
+
     async def _ensure(self) -> None:
         client = self.client
         if client and not client.is_connected():
@@ -228,7 +245,13 @@ class TelegramService:
         msg = await self.get_message(chat_id, msg_id)
         for attempt in range(2):
             try:
-                async for chunk in client.iter_download(msg.media, offset=aligned, request_size=CHUNK):
+                chunks = client.iter_download(msg.media, offset=aligned, request_size=CHUNK).__aiter__()
+                while True:
+                    try:  # a download that hangs (seen after the network dropped) -> reconnect and try again
+                        chunk = await asyncio.wait_for(chunks.__anext__(), DOWNLOAD_STALL_SECONDS)
+                    except StopAsyncIteration:
+                        break
+                    self._data_at = time.time()
                     if skip:
                         chunk = chunk[skip:]
                         skip = 0
@@ -243,6 +266,11 @@ class TelegramService:
                 if attempt:
                     raise
                 msg = await self.get_message(chat_id, msg_id, fresh=True)
+            except asyncio.TimeoutError:
+                if attempt:
+                    raise
+                await self.heal()
+                client = self._require()
 
     async def _get_message_batched(self, chat_id: int, msg_id: int):
         """A page shows dozens of pictures at once: ask Telegram for all their messages in ONE request
@@ -292,6 +320,7 @@ class TelegramService:
         async with self._thumb_sem:
             try:
                 data = await client.download_media(msg, file=bytes, thumb=-1)
+                self._data_at = time.time()
             except (TypeError, ValueError, IndexError):
                 return None
         return data or None

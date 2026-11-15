@@ -36,3 +36,30 @@ def test_ranges():
     svc = make()
     for start, end in [(0, 10), (5, CHUNK + 5), (CHUNK - 1, CHUNK), (CHUNK * 2 + 123, len(DATA) - 1), (0, len(DATA) - 1)]:
         assert collect(svc, start, end) == DATA[start:end + 1], (start, end)
+
+
+def test_stuck_download_reconnects_and_continues(monkeypatch):
+    import app.telegram as tgmod
+
+    monkeypatch.setattr(tgmod, "DOWNLOAD_STALL_SECONDS", 0.05)
+    svc = make()
+    healed = []
+
+    class StuckOnce(FakeClient):
+        calls = 0
+
+        async def iter_download(self, media, offset=0, request_size=CHUNK):
+            StuckOnce.calls += 1
+            if StuckOnce.calls == 1:
+                await asyncio.sleep(10)  # hangs like a stale file connection
+            async for c in FakeClient.iter_download(self, media, offset, request_size):
+                yield c
+
+    svc.client = StuckOnce()
+
+    async def heal():
+        healed.append(1)
+
+    svc.heal = heal
+    assert collect(svc, 0, CHUNK + 10) == DATA[:CHUNK + 11]
+    assert healed == [1]
