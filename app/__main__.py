@@ -13,7 +13,7 @@ if __name__ == "__main__":
     # 127.0.0.1 = reachable only from this phone. Set HOST=0.0.0.0 to allow other devices on the Wi-Fi.
     host = os.getenv("HOST", "127.0.0.1")
     url = f"http://localhost:{port}"
-    print(f"\n  האתר פועל!  פתח בדפדפן:  {url}\n  כדי לעצור: CTRL+C (או לסגור את Termux)\n")
+    print(f"\n  *** The site is running! Open in the browser: {url}\n  To stop: CTRL+C (or close Termux)\n")
     if shutil.which("termux-open-url") and os.getenv("NO_BROWSER") != "1":
         threading.Timer(2.5, lambda: subprocess.run(["termux-open-url", url], check=False)).start()
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
