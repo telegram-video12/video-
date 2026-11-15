@@ -732,7 +732,7 @@ async function pageSettings() {
     </div>
     <div class="panel"><h3>ניקוי שמות</h3>
       <p class="muted" style="margin-top:0">האתר מזהה לבד חתימות של קבוצות (כמו "קינג סרט") ומוחק אותן משמות הסרטים, כדי שכל סרט יופיע פעם אחת. אם נשארה חתימה, כתוב אותה כאן, <b>שורה לכל ביטוי</b>, והיא תימחק מכל השמות.</p>
-      <textarea class="input" id="strip-phrases" rows="5" style="width:100%;resize:vertical" placeholder="קינג סרט&#10;מדיה VOD&#10;פופקורן טיים">${esc((st.strip_phrases || []).join('\n'))}</textarea>
+      <textarea class="input" id="strip-phrases" rows="5" style="width:100%;resize:vertical" placeholder="(ריק) כתוב כאן, למשל:&#10;קינג סרט&#10;פופקורן טיים">${esc((st.strip_phrases || []).join('\n'))}</textarea>
       <button class="btn" id="save-phrases" style="margin-top:8px">שמור וסדר מחדש</button>
     </div>
     <div class="panel"><h3>פוסטרים ותקצירים (רשות)</h3>
