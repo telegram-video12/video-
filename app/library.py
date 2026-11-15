@@ -78,7 +78,8 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: 
     chat = db.get_chat(chat_id)
     if not chat:
         return 0
-    rows = db.q("SELECT m.id, m.caption, m.file_name, m.manual, m.duration, m.auto_norm, t.kind, t.norm_name FROM media m "
+    rows = db.q("SELECT m.id, m.title_id, m.caption, m.file_name, m.manual, m.duration, m.auto_norm, "
+                "t.kind, t.norm_name, t.tmdb_id FROM media m "
                 "JOIN titles t ON t.id = m.title_id WHERE m.chat_id = ?", (chat_id,))
     old = _stored(chat)  # what was used last time (auto + phrases)
     if corpus is None:
@@ -94,25 +95,25 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: 
         if r["manual"]:
             continue
         fallback = chat["title"]
-        if r["auto_norm"] is not None and r["auto_norm"] != r["norm_name"]:
-            continue  # merged or moved since it was added: leave it alone
+        if r["auto_norm"] is not None and r["auto_norm"] != r["norm_name"] and r["tmdb_id"] is not None:
+            continue  # TMDB merged it into an entry with another name: leave it there
         info = parse_media(r["caption"], r["file_name"], fallback, new)
         norm = normalize(info.name) or info.name
         if info.kind != r["kind"] or norm != r["norm_name"]:
-            moves.append((r["id"], info.kind, norm, info.name, info.year))
+            moves.append((r["id"], r["title_id"], info.kind, norm, info.name, info.year))
     if not moves:
         return 0
     # 2. apply them in one transaction
     cache: dict[tuple[str, str], int] = {}
     with db._lock:
         conn = db.conn
-        for media_id, kind, norm, name, year in moves:
-            key = (kind, norm)
+        for media_id, _current, kind, norm, name, year in moves:
+            key = (kind, norm, year)
             if key not in cache:
-                row = conn.execute("SELECT id FROM titles WHERE kind = ? AND norm_name = ?", key).fetchone()
-                cache[key] = row[0] if row else conn.execute(
-                    "INSERT INTO titles (kind, name, norm_name, year, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (kind, name, norm, year, time.time())).lastrowid
+                tid = db.find_title(conn, kind, norm, year)
+                cache[key] = tid or conn.execute(
+                    "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (kind, name, db.free_key(conn, kind, norm, year), normalize(name), year, time.time())).lastrowid
             conn.execute("UPDATE media SET title_id = ?, auto_norm = ? WHERE id = ?", (cache[key], norm, media_id))
         conn.execute("DELETE FROM titles WHERE id NOT IN (SELECT DISTINCT title_id FROM media)")
         conn.commit()
@@ -126,6 +127,7 @@ def regroup_all(db: Database, force: bool = False) -> int:
     force: also re-file when only the name parser itself changed (after an update)."""
     corpus = _corpus(db)
     moved = sum(regroup_chat(db, c["id"], corpus, force) for c in db.chats())
+    moved += db.merge_by_name()
     db.x("UPDATE media SET auto_norm = (SELECT norm_name FROM titles t WHERE t.id = media.title_id) "
          "WHERE auto_norm IS NULL AND manual = 0")
     repair(db)

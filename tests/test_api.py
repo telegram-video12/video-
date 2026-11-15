@@ -531,3 +531,30 @@ def test_library_filters_and_sorting(client):
     assert names("kind=movie&decade=1990") == ["בטא"] and names("kind=movie&decade=old") == []
     assert names("kind=movie&sort=watched")[:2] == ["גמא", "אלפא"]
     assert lib("kind=series&state=new")["total"] == 1
+
+
+def test_upload_named_like_tmdb_title_joins_it_and_remakes_stay_apart(client, monkeypatch):
+    import asyncio
+    from app.tmdb import TMDB
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "Spider-Man No Way Home (2021)")), (2, vm(2, "מלך האריות (1994)"))]
+    scan(client)
+
+    async def lookup(self, kind, name, year=None, tmdb_id=None):
+        heb = {"Spider-Man No Way Home": "ספיידרמן: אין דרך הביתה", "מלך האריות": "מלך האריות"}[name]
+        return {"tmdb_id": hash(name) % 1000, "tmdb_name": heb, "overview": "", "poster": None, "backdrop": None, "year": year}
+    monkeypatch.setattr(TMDB, "lookup", lookup)
+    db = client.app.state.db
+    asyncio.run(TMDB("k").enrich_pending(db))
+    # a later Hebrew upload, spelled differently, joins the TMDB-named entry
+    tg.messages = tg.messages + [(3, vm(3, "ספיידרמן אין דרך הבייתה (2021)")), (4, vm(4, "מלך האריות (2019)"))]
+    scan(client)
+    names = sorted(t["name"] for t in client.get("/api/library?limit=50").json()["titles"])
+    assert names.count("ספיידרמן: אין דרך הביתה") == 1 and len([n for n in names if "ספיידרמן" in n]) == 1
+    assert names.count("מלך האריות") == 2          # 1994 and the 2019 remake stay separate
+    # and an entry that existed before TMDB named the other one is merged too
+    from app.parser import normalize
+    db.x("INSERT INTO titles (kind, name, norm_name, name_key, year, created_at) VALUES ('movie','x',?,'x',2021,0)",
+         (normalize("ספיידרמן אין דרך הבייתה"),))
+    assert db.merge_by_name() >= 1

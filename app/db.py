@@ -96,6 +96,16 @@ class Database:
             self.conn.execute("ALTER TABLE chats ADD COLUMN season_label TEXT")
         if "branding" not in cols:
             self.conn.execute("ALTER TABLE chats ADD COLUMN branding TEXT")
+        tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(titles)")}
+        if "name_key" not in tcols:  # normalize(name): lets uploads find a title by its TMDB name too
+            from .parser import normalize
+
+            self.conn.execute("ALTER TABLE titles ADD COLUMN name_key TEXT")
+            rows = self.conn.execute("SELECT id, name FROM titles").fetchall()
+            self.conn.executemany("UPDATE titles SET name_key = ? WHERE id = ?",
+                                  [(normalize(r[1] or ""), r[0]) for r in rows])
+        self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS titles_norm ON titles(norm_name)")
         mcols = {r[1] for r in self.conn.execute("PRAGMA table_info(media)")}
         if "auto_norm" not in mcols:  # the name key the automatic parser gave this video
             self.conn.execute("ALTER TABLE media ADD COLUMN auto_norm TEXT")
@@ -189,20 +199,67 @@ class Database:
         self.x("UPDATE chats SET last_msg_id = 0 WHERE id = ?", (chat_id,))
 
     # ----------------------------------------------------------------- titles
+    @staticmethod
+    def find_title(conn, kind: str, norm_name: str, year: int | None) -> int | None:
+        """A title for this name: same key, or a title whose (TMDB) display name gives the same key
+        and whose year does not contradict (so a remake is not merged into the original)."""
+        row = conn.execute("SELECT id, year FROM titles WHERE kind = ? AND norm_name = ?", (kind, norm_name)).fetchone()
+        if row and (kind != "movie" or not year or not row[1] or abs(year - row[1]) <= 1):
+            return row[0]
+        if row:  # same name, years far apart: a remake is its own movie
+            alt = conn.execute("SELECT id FROM titles WHERE kind = ? AND norm_name = ?",
+                               (kind, f"{norm_name}#{year}")).fetchone()
+            return alt[0] if alt else None
+        for tid, y in conn.execute("SELECT id, year FROM titles WHERE kind = ? AND name_key = ? "
+                                   "ORDER BY tmdb_id IS NULL, id", (kind, norm_name)):
+            if not year or not y or abs(year - y) <= 1:
+                return tid
+        return None
+
     def get_or_create_title(self, kind: str, name: str, norm_name: str, year: int | None) -> int:
-        row = self.q1("SELECT id FROM titles WHERE kind = ? AND norm_name = ?", (kind, norm_name))
-        if row:
-            return row["id"]
+        from .parser import normalize
+
+        with self._lock:
+            tid = self.find_title(self.conn, kind, norm_name, year)
+        if tid:
+            return tid
         return self.x(
-            "INSERT INTO titles (kind, name, norm_name, year, created_at) VALUES (?, ?, ?, ?, ?)",
-            (kind, name, norm_name, year, time.time()),
+            "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (kind, name, self.free_key(self.conn, kind, norm_name, year), normalize(name), year, time.time()),
         )
+
+    @staticmethod
+    def free_key(conn, kind: str, norm_name: str, year: int | None) -> str:
+        """The key for a NEW title: a remake whose name is taken gets the year added."""
+        taken = conn.execute("SELECT 1 FROM titles WHERE kind = ? AND norm_name = ?", (kind, norm_name)).fetchone()
+        return f"{norm_name}#{year}" if taken and year else norm_name
+
+    def merge_by_name(self, name_key: str | None = None) -> int:
+        """Merge a title without TMDB info into a TMDB title whose name gives the same key
+        ("ספיידרמן אין דרך הבייתה" -> "ספיידרמן: אין דרך הביתה")."""
+        pairs = self.q(
+            """SELECT b.id AS src, MIN(a.id) AS dst FROM titles b
+               JOIN titles a ON a.kind = b.kind AND a.name_key = b.norm_name AND a.id != b.id
+               WHERE b.tmdb_id IS NULL AND a.tmdb_id IS NOT NULL
+                 AND (a.year IS NULL OR b.year IS NULL OR ABS(a.year - b.year) <= 1)
+                 AND (? IS NULL OR b.norm_name = ?)
+               GROUP BY b.id""",
+            (name_key, name_key),
+        )
+        for p in pairs:
+            if self.get_title(p["src"]) and self.get_title(p["dst"]):
+                self.merge_titles(p["src"], p["dst"])
+        return len(pairs)
 
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
+        if "name" in fields:
+            from .parser import normalize
+
+            fields["name_key"] = normalize(fields["name"] or "")
         sets = ", ".join(f"{k} = ?" for k in fields)
         self.x(f"UPDATE titles SET {sets} WHERE id = ?", (*fields.values(), title_id), soft=soft)
 

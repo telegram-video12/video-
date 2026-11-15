@@ -304,6 +304,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         target = int((await body(request)).get("into") or 0)
         if target == title_id or not db.get_title(target) or not db.get_title(title_id):
             raise ApiError(400, "יעד לא תקין")
+        db.x("UPDATE media SET manual = 1 WHERE title_id = ?", (title_id,))  # your merge: never undone
         db.merge_titles(title_id, target)
         return ok({"ok": True, "title_id": target})
 
@@ -471,7 +472,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                 before = db.q1("SELECT COUNT(*) AS c FROM titles")["c"]
                 scanner.status.update(running=True, chat="מסדר שמות לפי הרשימה שלך", added=0, error=None, note=None)
                 try:
-                    moved = await asyncio.to_thread(regroup_all, db)
+                    moved = await asyncio.to_thread(regroup_all, db, True)
                     after = db.q1("SELECT COUNT(*) AS c FROM titles")["c"]
                     scanner.status["note"] = (f"ניקוי שמות הסתיים: {moved:,} קבצים קיבלו שם נקי, "
                                               f"{max(0, before - after):,} כפילויות אוחדו")
