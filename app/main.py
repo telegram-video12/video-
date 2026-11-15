@@ -305,7 +305,35 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                 shown.update(t["id"] for t in row)
             if len(rows) >= 4:
                 break
-        return ok({"new": [card(t) for t in fresh[:20]], "genres": rows, "personal": based_on_you})
+        return ok({"new": [card(t) for t in fresh[:20]], "genres": rows, "personal": based_on_you,
+                   "watchlist": watchlist_cards()[:20]})
+
+    def watchlist_cards() -> list[dict]:
+        by_id = {t["id"]: t for t in db.library_titles()}
+        return [card(by_id[i]) for i in db.watchlist_ids() if i in by_id]
+
+    async def my_list(request: Request):
+        """My list page: saved for later, what you watched, and how much."""
+        history = [{
+            "media_id": h["media_id"], "title_id": h["title_id"], "name": h["name"], "kind": h["kind"],
+            "season": h["season"], "episode": h["episode"], "position": h["position"],
+            "duration": h["duration"] or h["media_duration"], "completed": bool(h["completed"]),
+            "at": h["updated_at"], "pic": h["backdrop"] or thumb_url(h["media_id"]),
+        } for h in db.history()]
+        return ok({"watchlist": watchlist_cards(), "history": history, "stats": db.watch_stats()})
+
+    async def watchlist_set(request: Request):
+        title_id = request.path_params["id"]
+        if not db.get_title(title_id):
+            raise ApiError(404, "לא נמצא")
+        on = bool((await body(request)).get("on", True))
+        db.set_watchlist(title_id, on)
+        return ok({"on": on})
+
+    async def history_hide(request: Request):
+        ids = [int(i) for i in (await body(request)).get("ids", []) if str(i).isdigit()][:1000]
+        db.hide_history(ids)
+        return ok()
 
     async def random_pick(request: Request):
         """'Surprise me': something you have not started yet. ?kind=series|movie&not=<id>"""
@@ -377,6 +405,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         return ok({
             "title": t,
             "new_since": db.last_watched_at(title_id) if t["kind"] == "series" else None,
+            "in_list": title_id in db.watchlist_ids(),
             "season_labels": db.season_labels(title_id),
             "media": items,
             "resume": {"media": media_out(resume["media"]), "position": resume["position"], "state": resume["state"]}
@@ -833,6 +862,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/login", login, methods=["POST"]), R("/api/logout", logout, methods=["POST"]),
         R("/api/password", change_password, methods=["POST"]),
         R("/api/library", library), R("/api/genres", genres_list), R("/api/home", home_rows), R("/api/random", random_pick),
+        R("/api/mylist", my_list), R("/api/watchlist/{id:int}", watchlist_set, methods=["POST"]),
+        R("/api/history/hide", history_hide, methods=["POST"]),
         R("/api/watched-many", watched_many, methods=["POST"]),
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),
         R("/api/titles/{id:int}/merge", merge_title, methods=["POST"]),

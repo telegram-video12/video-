@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS media (
 );
 CREATE INDEX IF NOT EXISTS media_title ON media(title_id, season, episode);
 
+CREATE TABLE IF NOT EXISTS watchlist (
+    title_id INTEGER PRIMARY KEY,
+    added_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS prefs (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -112,6 +117,9 @@ class Database:
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_norm ON titles(norm_name)")
+        pcols = {r[1] for r in self.conn.execute("PRAGMA table_info(progress)")}
+        if "history_hidden" not in pcols:  # removed from "history" by you (the progress itself stays)
+            self.conn.execute("ALTER TABLE progress ADD COLUMN history_hidden INTEGER NOT NULL DEFAULT 0")
         mcols = {r[1] for r in self.conn.execute("PRAGMA table_info(media)")}
         if "auto_norm" not in mcols:  # the name key the automatic parser gave this video
             self.conn.execute("ALTER TABLE media ADD COLUMN auto_norm TEXT")
@@ -276,6 +284,8 @@ class Database:
         so thousands of background merges do not rebuild the list on every page load."""
         with self._lock:
             self.conn.execute("UPDATE media SET title_id = ? WHERE title_id = ?", (target_id, source_id))
+            self.conn.execute("UPDATE OR IGNORE watchlist SET title_id = ? WHERE title_id = ?", (target_id, source_id))
+            self.conn.execute("DELETE FROM watchlist WHERE title_id = ?", (source_id,))
             self.conn.execute("DELETE FROM titles WHERE id = ?", (source_id,))
             self.conn.commit()
             if soft:
@@ -476,7 +486,7 @@ class Database:
                ON CONFLICT(media_id) DO UPDATE SET position = excluded.position,
                  duration = excluded.duration,
                  completed = MAX(progress.completed, excluded.completed),
-                 updated_at = excluded.updated_at""",
+                 updated_at = excluded.updated_at, history_hidden = 0""",
             (media_id, position, duration, int(completed), time.time()),
         )
         return completed
@@ -491,6 +501,66 @@ class Database:
         else:  # keep the row (as "not watched", now) so other devices learn about it when syncing
             self.x("UPDATE progress SET completed = 0, position = 0, updated_at = ? WHERE media_id = ?",
                    (time.time(), media_id))
+
+    # ------------------------------------------------------------ my list
+    def watchlist_ids(self) -> list[int]:
+        return [r["title_id"] for r in self.q("SELECT title_id FROM watchlist ORDER BY added_at DESC")]
+
+    def set_watchlist(self, title_id: int, on: bool) -> None:
+        if on:
+            self.x("INSERT OR IGNORE INTO watchlist (title_id, added_at) VALUES (?, ?)", (title_id, time.time()), soft=True)
+        else:
+            self.x("DELETE FROM watchlist WHERE title_id = ?", (title_id,), soft=True)
+
+    def history(self, limit: int = 300) -> list[dict]:
+        """What you actually watched (not episodes only ticked as watched), newest first."""
+        return self.q(
+            f"""SELECT p.media_id, p.position, p.duration, p.completed, p.updated_at,
+                       m.season, m.episode, m.file_name, m.caption, m.duration AS media_duration,
+                       t.id AS title_id, t.name, t.kind, t.poster, t.backdrop
+                FROM progress p JOIN media m ON m.id = p.media_id JOIN titles t ON t.id = m.title_id
+                WHERE p.position >= {MIN_STARTED} AND p.history_hidden = 0
+                ORDER BY p.updated_at DESC LIMIT ?""",
+            (limit,),
+        )
+
+    def hide_history(self, media_ids: list[int]) -> None:
+        with self._lock:
+            self.conn.executemany("UPDATE progress SET history_hidden = 1 WHERE media_id = ?", [(i,) for i in media_ids])
+            self.conn.commit()
+
+    def watch_stats(self) -> dict:
+        """Roughly how much you watched: the place you reached in each video counts as time watched."""
+        now = time.time()
+        rows = self.q(
+            f"""SELECT p.position, p.completed, p.updated_at, t.kind, t.genres, t.id AS title_id
+                FROM progress p JOIN media m ON m.id = p.media_id JOIN titles t ON t.id = m.title_id
+                WHERE p.position >= {MIN_STARTED}"""
+        )
+
+        def total(days: float | None) -> dict:
+            sel = [r for r in rows if days is None or r["updated_at"] >= now - days * 86400]
+            return {"seconds": sum(r["position"] for r in sel),
+                    "episodes": sum(1 for r in sel if r["completed"] and r["kind"] == "series"),
+                    "movies": sum(1 for r in sel if r["completed"] and r["kind"] == "movie"),
+                    "titles": len({r["title_id"] for r in sel})}
+
+        day0 = time.localtime(now)
+        midnight = time.mktime((day0.tm_year, day0.tm_mon, day0.tm_mday, 0, 0, 0, 0, 0, -1))
+        days = []
+        for i in range(13, -1, -1):  # the last 14 days, oldest first
+            lo = midnight - i * 86400
+            days.append({"day": lo, "seconds": sum(r["position"] for r in rows if lo <= r["updated_at"] < lo + 86400)})
+        genres: dict[str, float] = {}
+        for r in rows:
+            try:
+                for g in json.loads(r["genres"] or "[]"):
+                    genres[g] = genres.get(g, 0) + r["position"]
+            except ValueError:
+                pass
+        top = sorted(genres.items(), key=lambda x: -x[1])[:6]
+        return {"week": total(7), "month": total(30), "all": total(None), "days": days,
+                "genres": [{"name": g, "seconds": sec} for g, sec in top]}
 
     # ---------------------------------------------------------- device sync
     def export_progress(self) -> list[dict]:

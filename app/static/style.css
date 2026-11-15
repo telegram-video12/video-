@@ -406,13 +406,64 @@ body.pl-fs { overflow: hidden; }
 .btn.ghost { background: rgba(255, 255, 255, .14); border-color: transparent; backdrop-filter: blur(6px); }
 
 /* things only the computer layout uses */
-.topnav, .rowarrow, .watch-side, .settings-nav { display: none; }
+.topnav, .rowarrow, .watch-side { display: none; }
+/* settings on the phone: a menu of topics; each topic opens on its own screen */
+.backlink { display: inline-block; margin-top: 14px; color: var(--muted); font-size: 14px; }
+.backlink + .phead { padding-top: 6px; }
+.settings-layout.menu .settings-body { display: none; }
+.settings-layout.one .settings-nav { display: none; }
+.settings-layout.one[data-sec="sec-tg"] .panel:not(#sec-tg), .settings-layout.one[data-sec="sec-chats"] .panel:not(#sec-chats),
+.settings-layout.one[data-sec="sec-scan"] .panel:not(#sec-scan), .settings-layout.one[data-sec="sec-sync"] .panel:not(#sec-sync),
+.settings-layout.one[data-sec="sec-clean"] .panel:not(#sec-clean), .settings-layout.one[data-sec="sec-tmdb"] .panel:not(#sec-tmdb),
+.settings-layout.one[data-sec="sec-pw"] .panel:not(#sec-pw) { display: none; }
+.settings-layout.one .panel > h3 { display: none; }
+.settings-nav { display: flex; flex-direction: column; background: var(--s1); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.settings-nav button { display: grid; grid-template-columns: 30px 1fr auto; grid-template-areas: "e l i" "e s i"; align-items: center; column-gap: 10px;
+  padding: 14px 14px; background: none; border: 0; border-bottom: 1px solid var(--line); text-align: right; cursor: pointer; color: inherit; font: inherit; }
+.settings-nav button:last-child { border-bottom: 0; }
+.settings-nav button span { grid-area: e; font-size: 20px; }
+.settings-nav button b { grid-area: l; font-weight: 600; font-size: 15px; }
+.settings-nav button small { grid-area: s; color: var(--muted); font-size: 12.5px; }
+.settings-nav button i { grid-area: i; font-style: normal; color: var(--muted); font-size: 20px; }
 .rwrap { position: relative; }
 .banner.banner-noimg { min-height: 0 !important; padding-top: 24px; }
 
 /* ======================================================================
    Computer (wide screens): top navigation, wider grids, two columns
    ====================================================================== */
+/* ---------- my list: saved, history, stats ---------- */
+.listbtn { margin-top: 8px; }
+.listbtn.on { color: var(--gold); border-color: rgba(233, 180, 76, .5); }
+.mylist-tabs { margin-bottom: 16px; }
+.empty.small { padding: 40px 20px; }
+.ml-count { font-size: 13px; margin-bottom: 10px; }
+.hist-day { font-size: 15px; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
+.hist-list { display: flex; flex-direction: column; gap: 4px; }
+.hist-item { display: flex; align-items: center; gap: 12px; padding: 8px; border-radius: 12px; }
+.hist-item:hover { background: var(--s1); }
+.hist-item .thumb { position: relative; width: 112px; aspect-ratio: 16 / 9; flex-shrink: 0; border-radius: 8px; overflow: hidden; background: var(--s2); }
+.hist-item .thumb .bar { position: absolute; left: 0; right: 0; bottom: 0; }
+.hist-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.hist-info b { font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-info span { font-size: 12.5px; color: var(--muted); }
+.hist-time { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.iconbtn.small { width: 32px; height: 32px; font-size: 13px; color: var(--muted); }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.stat { background: var(--s1); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.stat-label { font-size: 12.5px; color: var(--muted); }
+.stat-big { font-size: 30px; font-weight: 800; color: var(--gold); margin: 2px 0; }
+.stat-sub { font-size: 12.5px; color: var(--muted); }
+.dbars { display: flex; align-items: flex-end; gap: 4px; height: 150px; direction: ltr; padding-top: 18px; }
+.dbar { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative; min-width: 0; }
+.dbar i { width: 100%; max-width: 34px; min-height: 2px; border-radius: 5px 5px 0 0; background: var(--gold); }
+.dbar .dval { font-size: 10px; color: var(--muted); white-space: nowrap; margin-bottom: 2px; }
+.dbar .dlab { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.gbar { display: grid; grid-template-columns: 90px 1fr 56px; gap: 10px; align-items: center; margin: 8px 0; font-size: 13.5px; }
+.gbar div { height: 10px; background: var(--s2); border-radius: 5px; overflow: hidden; }
+.gbar div i { display: block; height: 100%; background: var(--gold); border-radius: 5px; }
+.gbar b { font-weight: 600; font-size: 12.5px; color: var(--muted); text-align: left; }
+@media (max-width: 719px) { .hist-item .thumb { width: 88px; } .hist-time { display: none; } .dbar .dval { display: none; } }
+
 /* ---------- surprise me (🎲) ---------- */
 .dice-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .dice-head h3 { margin: 0; }
@@ -515,11 +566,22 @@ body.pl-fs { overflow: hidden; }
 
   /* settings: side menu */
   .settings-layout { display: grid; grid-template-columns: 250px minmax(0, 820px); gap: 32px; align-items: start; }
+  .settings-layout.menu .settings-body { display: block; }
+  .settings-layout.one .settings-nav { display: flex; }
+  .settings-layout.one .settings-body .panel { display: block !important; }
+  .settings-layout.one .panel > h3 { display: block; }
+  .backlink { display: none; }
+  .settings-nav { background: none; border: 0; border-radius: 0; overflow: visible; }
+  .settings-nav button { border-bottom: 0; grid-template-areas: "e l i" "e s i"; }
+  .settings-nav button i { display: none; }
+  .settings-nav button small { font-size: 12px; }
   .settings-nav {
     display: flex; flex-direction: column; gap: 2px; position: sticky; top: 84px;
     background: var(--s1); border: 1px solid var(--line); border-radius: 16px; padding: 8px;
   }
-  .settings-nav button { display: flex; gap: 10px; align-items: center; padding: 11px 12px; border-radius: 10px; background: none; border: 0; text-align: right; cursor: pointer; font-size: 14.5px; }
+  .settings-nav button { display: grid; column-gap: 10px; align-items: center; padding: 9px 12px; border-radius: 10px; background: none; border: 0; text-align: right; cursor: pointer; font-size: 14.5px; }
+  .settings-nav button span { font-size: 17px; }
+  .settings-nav button b { font-size: 14.5px; font-weight: 500; }
   .settings-nav button:hover { background: var(--s2); }
   .settings-nav button.on { background: rgba(233, 180, 76, .12); color: var(--gold); font-weight: 700; }
   .settings-body .panel { scroll-margin-top: 84px; }

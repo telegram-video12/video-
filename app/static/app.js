@@ -75,7 +75,7 @@ async function route() {
   try {
     if (first === 'title') await pageTitle(+parts[1]);
     else if (first === 'watch') await pageWatch(+parts[1]);
-    else if (first === 'more' || first === 'settings') await pageSettings();
+    else if (first === 'more' || first === 'settings') await pageSettings(parts[1]);
     else if (first === 'series') await pageList('series', st);
     else if (first === 'movies') await pageList('movie', st);
     else if (first === 'search') await pageSearch(st);
@@ -118,7 +118,7 @@ async function pageHome() {
     api('/api/library?limit=20'),
     api('/api/library?kind=series&limit=20&nocont=1'),
     api('/api/library?kind=movie&limit=20&nocont=1'),
-    api('/api/home').catch(() => ({new: [], genres: []})),
+    api('/api/home').catch(() => ({new: [], genres: [], watchlist: []})),
   ]);
   libraryCache = all;
   if (!all.counts.all) { $app.innerHTML = head + emptyLibrary(); return; }
@@ -129,6 +129,7 @@ async function pageHome() {
   $app.innerHTML = head + (top ? banner(top) : '') +
     (cont.length ? rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`) : '') +
     (extra.new.length ? rowSection('✨ פרקים חדשים', '', posterRow(extra.new)) : '') +
+    ((extra.watchlist || []).length ? rowSection('⭐ לצפות בהמשך', '#/mylist', posterRow(extra.watchlist)) : '') +
     extra.genres.map((r) => rowSection(extra.personal ? `כי אתה אוהב ${r.genre}` : r.genre, '', posterRow(r.titles))).join('') +
     (series.titles.length ? rowSection('סדרות שנוספו לאחרונה', '#/series', `<div class="hrow">${series.titles.map(posterCard).join('')}</div>`) : '') +
     (movies.titles.length ? rowSection('סרטים שנוספו לאחרונה', '#/movies', `<div class="hrow">${movies.titles.map(posterCard).join('')}</div>`) : '');
@@ -440,12 +441,94 @@ async function pageSearch(st) {
 
 // ------------------------------------------------------------------- my list
 async function pageMyList() {
+  const tabs = [['list', '⭐ לצפות בהמשך'], ['history', '🕘 היסטוריה'], ['stats', '📊 סטטיסטיקה']];
+  let tab = store.get('mylist:tab', 'list');
+  if (!tabs.some(([k]) => k === tab)) tab = 'list';
   $app.innerHTML = pageHeader('הרשימה שלי') + skeletonRows();
-  const data = await api('/api/library?limit=1');
-  const cont = data.continue || [];
-  $app.innerHTML = pageHeader('הרשימה שלי') +
-    `<div class="note">בקרוב כאן: <b>לצפות בהמשך</b>, <b>היסטוריה</b> ו<b>סטטיסטיקה</b>.</div>` +
-    (cont.length ? rowSection('באמצע לצפות', '', `<div class="vlist">${cont.map(contCard).join('')}</div>`) : '');
+  const data = await api('/api/mylist');
+  const draw = () => {
+    $app.innerHTML = pageHeader('הרשימה שלי') +
+      `<div class="chips mylist-tabs">${tabs.map(([k, l]) => `<button class="tab ${k === tab ? 'active' : ''}" data-tab="${k}">${l}</button>`).join('')}</div>
+       <div id="mlbody">${tab === 'list' ? myWatchlist(data) : tab === 'history' ? myHistory(data) : myStats(data.stats)}</div>`;
+    $app.querySelectorAll('.mylist-tabs [data-tab]').forEach((b) => b.onclick = () => { tab = b.dataset.tab; store.set('mylist:tab', tab); draw(); });
+    if (tab === 'history') bindHistory();
+  };
+  const bindHistory = () => {
+    const hide = async (ids, msg) => {
+      try { await api('/api/history/hide', {method: 'POST', body: {ids}}); } catch (e) { alert(e.message); return; }
+      data.history = data.history.filter((h) => !ids.includes(h.media_id));
+      draw();
+      if (msg) undoToast(msg, null);
+    };
+    $app.querySelectorAll('[data-forget]').forEach((b) => b.onclick = (e) => { e.preventDefault(); hide([+b.dataset.forget]); });
+    $app.querySelector('#clear-history')?.addEventListener('click', () => {
+      if (confirm('למחוק את כל ההיסטוריה? ההתקדמות בצפייה (איפה עצרת, מה נצפה) נשארת.')) hide(data.history.map((h) => h.media_id));
+    });
+  };
+  draw();
+}
+
+function myWatchlist(data) {
+  if (!data.watchlist.length) {
+    return `<div class="empty small"><h2>הרשימה ריקה</h2><p>בדף של כל סדרה או סרט יש כפתור <b>＋ לצפות בהמשך</b>. מה ששומרים מופיע כאן ובדף הבית.</p></div>`;
+  }
+  return `<div class="muted ml-count">${n(data.watchlist.length)} שמורים</div><div class="pgrid">${data.watchlist.map(posterCard).join('')}</div>`;
+}
+
+function dayName(ts) {
+  const d = new Date(ts * 1000), today = new Date();
+  const days = Math.round((new Date(today.toDateString()) - new Date(d.toDateString())) / 86400000);
+  if (days === 0) return 'היום';
+  if (days === 1) return 'אתמול';
+  if (days < 7) return d.toLocaleDateString('he-IL', {weekday: 'long'});
+  return d.toLocaleDateString('he-IL', {weekday: 'long', day: 'numeric', month: 'long'});
+}
+
+function myHistory(data) {
+  const h = data.history;
+  if (!h.length) return `<div class="empty small"><h2>עוד לא צפית בכלום</h2><p>מה שתצפה בו יופיע כאן לפי ימים.</p></div>`;
+  let html = '', last = '';
+  for (const x of h) {
+    const day = dayName(x.at);
+    if (day !== last) { html += `${last ? '</div>' : ''}<h3 class="hist-day">${esc(day)}</h3><div class="hist-list">`; last = day; }
+    const p = x.completed ? 100 : x.duration ? Math.min(100, (x.position / x.duration) * 100) : 0;
+    const ep = x.kind === 'series' && x.episode != null ? epLong(x) : (x.kind === 'movie' ? 'סרט' : '');
+    const time = new Date(x.at * 1000).toLocaleTimeString('he-IL', {hour: '2-digit', minute: '2-digit'});
+    html += `<a class="hist-item" href="#/watch/${x.media_id}">
+      <div class="thumb">${img(x.pic)}<div class="bar"><i style="width:${p}%"></i></div></div>
+      <div class="hist-info"><b>${esc(x.name)}</b><span>${esc(ep)}${ep ? ' · ' : ''}${x.completed ? '✓ נצפה' : `עצרת ב-${fmtTime(x.position)}`}</span></div>
+      <span class="hist-time">${time}</span>
+      <button class="iconbtn small" data-forget="${x.media_id}" title="הסר מההיסטוריה" aria-label="הסר מההיסטוריה">✕</button>
+    </a>`;
+  }
+  return html + `</div><button class="btn danger" id="clear-history" style="margin-top:20px">מחק את כל ההיסטוריה</button>
+    <p class="muted" style="font-size:12.5px">מחיקה מההיסטוריה לא משנה את ההתקדמות בצפייה (איפה עצרת ומה סומן כנצפה).</p>`;
+}
+
+function hoursText(sec) {
+  const h = sec / 3600;
+  if (h < 1) return `${Math.round(sec / 60)} דק׳`;
+  return `${h < 10 ? h.toFixed(1).replace(/\.0$/, '') : Math.round(h)} שע׳`;
+}
+
+function myStats(s) {
+  const box = (label, x) => `<div class="stat">
+      <div class="stat-label">${label}</div><div class="stat-big">${hoursText(x.seconds)}</div>
+      <div class="stat-sub">${n(x.episodes)} פרקים · ${n(x.movies)} סרטים</div></div>`;
+  const max = Math.max(1, ...s.days.map((d) => d.seconds));
+  const bars = s.days.map((d, i) => {
+    const date = new Date(d.day * 1000);
+    const label = i === s.days.length - 1 ? 'היום' : date.toLocaleDateString('he-IL', {weekday: 'narrow'});
+    return `<div class="dbar" title="${esc(date.toLocaleDateString('he-IL', {weekday: 'long', day: 'numeric', month: 'numeric'}))}: ${hoursText(d.seconds)}">
+      <span class="dval">${d.seconds >= 60 ? hoursText(d.seconds) : ''}</span>
+      <i style="height:${(d.seconds / max) * 100}%"></i><span class="dlab">${label}</span></div>`;
+  }).join('');
+  const gmax = Math.max(1, ...s.genres.map((g) => g.seconds));
+  return `<div class="stats-grid">${box('7 הימים האחרונים', s.week)}${box('30 הימים האחרונים', s.month)}${box('מאז ומעולם', s.all)}</div>
+    <div class="panel"><h3>צפייה ב-14 הימים האחרונים</h3><div class="dbars">${bars}</div></div>
+    ${s.genres.length ? `<div class="panel"><h3>הז'אנרים שאתה הכי צופה בהם</h3>${s.genres.map((g) => `<div class="gbar">
+      <span>${esc(g.name)}</span><div><i style="width:${(g.seconds / gmax) * 100}%"></i></div><b>${hoursText(g.seconds)}</b></div>`).join('')}</div>` : ''}
+    <p class="muted" style="font-size:12.5px">הזמנים בערך: לכל פרק וסרט נספר הזמן עד המקום שהגעת אליו. פרקים שרק סימנת כנצפו לא נספרים.</p>`;
 }
 
 function contCard(c) {
@@ -538,6 +621,7 @@ async function pageTitle(id) {
     </section>
     <div class="title-grid"><aside class="title-side">
     ${resume ? `<a class="btn primary wide" href="#/watch/${resume.media.id}">▶ ${esc(resumeLabel)}</a>` : ''}
+    <button class="btn wide listbtn ${data.in_list ? 'on' : ''}" id="listbtn">${data.in_list ? '✓ ברשימה שלי' : '＋ לצפות בהמשך'}</button>
     ${t.overview ? `<p class="overview-text clamp" id="overview">${esc(t.overview)}</p>
       ${t.overview.length > 160 ? '<button class="linkbtn" id="more-overview">קרא עוד ▾</button>' : ''}` : ''}
     ${cast.length ? `<div class="cast">${cast.map((c) => `<div class="castm"><div class="avatar">${c.photo ? img(c.photo) : `<span>${esc((c.name || '?')[0])}</span>`}</div><div class="cn">${esc(c.name)}</div></div>`).join('')}</div>` : ''}
@@ -549,6 +633,16 @@ async function pageTitle(id) {
     ${isSeries ? '<div class="season-bar" id="season-bar"></div>' : ''}
     <div class="episodes" id="eps"></div>
     </section></div>`;
+
+  $app.querySelector('#listbtn').onclick = async (e) => {
+    const b = e.currentTarget, on = !b.classList.contains('on');
+    try {
+      await api(`/api/watchlist/${t.id}`, {method: 'POST', body: {on}});
+      b.classList.toggle('on', on);
+      b.textContent = on ? '✓ ברשימה שלי' : '＋ לצפות בהמשך';
+      libraryCache = null;
+    } catch (err) { alert(err.message); }
+  };
 
   const seasonList = () => (isSeries ? media.filter((m) => (m.season ?? 1) === season && !m.hidden) : visible);
   const renderSeasonBar = () => {
@@ -1199,17 +1293,28 @@ function telegramPanel(st) {
     <button class="btn small" id="reset-api" style="margin-top:14px">החלף API ID / Hash</button>`;
 }
 
-async function pageSettings() {
+const SETTINGS_SECTIONS = [['sec-tg', '📡', 'חיבור לטלגרם'], ['sec-chats', '📋', 'קבוצות וערוצים'], ['sec-scan', '🔄', 'סריקה'],
+  ['sec-sync', '🔗', 'סנכרון מכשירים'], ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים ותקצירים'], ['sec-pw', '🔒', 'סיסמה ויציאה']];
+
+async function pageSettings(section) {
+  // phone: a menu of topics, each opens on its own screen (#/more/sec-…); computer: all topics with a side menu
+  const reload = () => pageSettings(section);
   $app.innerHTML = '<div class="spinner"></div>';
   const st = await api('/api/status');
   const auth = st.telegram_authorized;
+  const sec = SETTINGS_SECTIONS.find(([id]) => id === section);
+  const statusOf = {
+    'sec-tg': auth ? `✓ מחובר${st.me?.name ? ' · ' + st.me.name : ''}` : 'לא מחובר',
+    'sec-scan': st.scan?.running ? '⏳ סורק עכשיו' : '',
+    'sec-sync': st.sync?.peer ? st.sync.peer : 'כבוי',
+    'sec-tmdb': !st.tmdb ? 'לא מוגדר' : st.tmdb_status?.running ? `⏳ ${st.tmdb_status.done.toLocaleString('he-IL')} מתוך ${st.tmdb_status.total.toLocaleString('he-IL')}` : '✓ פעיל',
+  };
 
   $app.innerHTML = `
-    ${pageHeader("עוד", "הגדרות, חיבורים וקבוצות")}
-    <div class="settings-layout"><nav class="settings-nav">
-      ${[['sec-tg', '📡', 'חיבור לטלגרם'], ['sec-chats', '📋', 'קבוצות וערוצים'], ['sec-scan', '🔄', 'סריקה'], ['sec-sync', '🔗', 'סנכרון מכשירים'],
-         ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים (TMDB)'], ['sec-pw', '🔒', 'סיסמה']]
-        .map(([id, e, l]) => `<button data-go="${id}"><span>${e}</span>${l}</button>`).join('')}
+    ${sec ? `<a class="backlink" href="#/more">→ הגדרות</a>${pageHeader(sec[2])}` : pageHeader("עוד", "הגדרות, חיבורים וקבוצות")}
+    <div class="settings-layout ${sec ? 'one' : 'menu'}" ${sec ? `data-sec="${sec[0]}"` : ''}><nav class="settings-nav">
+      ${SETTINGS_SECTIONS.filter(([id]) => auth || (id !== 'sec-chats' && id !== 'sec-scan'))
+        .map(([id, e, l]) => `<button data-go="${id}" class="${id === section ? 'on' : ''}"><span>${e}</span><b>${l}</b>${statusOf[id] ? `<small>${esc(statusOf[id])}</small>` : ''}<i>‹</i></button>`).join('')}
     </nav><div class="settings-body">
     <div class="panel" id="sec-tg"><h3>חיבור לטלגרם</h3>${telegramPanel(st)}</div>
     <div class="panel" id="sec-chats" ${auth ? '' : 'hidden'}><h3>קבוצות וערוצים</h3>
@@ -1261,9 +1366,11 @@ async function pageSettings() {
 
   const $ = (sel) => $app.querySelector(sel);
   $app.querySelectorAll('[data-go]').forEach((b) => b.onclick = () => {
+    if (!matchMedia('(min-width: 1000px)').matches) { location.hash = `#/more/${b.dataset.go}`; return; }
     $app.querySelectorAll('[data-go]').forEach((x) => x.classList.toggle('on', x === b));
     document.getElementById(b.dataset.go)?.scrollIntoView({behavior: 'smooth', block: 'start'});
   });
+  if (sec && matchMedia('(min-width: 1000px)').matches) document.getElementById(sec[0])?.scrollIntoView({block: 'start'});
   const run = async (fn, errEl) => {
     if (errEl) errEl.textContent = '';
     try { await fn(); } catch (e) { if (errEl) errEl.textContent = e.message; else alert(e.message); }
@@ -1272,19 +1379,19 @@ async function pageSettings() {
   // --- telegram connect flow
   $('#save-api')?.addEventListener('click', () => run(async () => {
     await api('/api/settings', {method: 'POST', body: {api_id: $('#api-id').value, api_hash: $('#api-hash').value.trim()}});
-    pageSettings();
+    reload();
   }));
   $('#reset-api')?.addEventListener('click', () => {
     $('.panel').innerHTML = '<h3>חיבור לטלגרם</h3>' + telegramPanel({...st, telegram_configured: false});
     $('#save-api').onclick = () => run(async () => {
       await api('/api/settings', {method: 'POST', body: {api_id: $('#api-id').value, api_hash: $('#api-hash').value.trim()}});
-      pageSettings();
+      reload();
     });
   });
   const tgErr = $('#tg-err');
   const show = (step) => ['phone', 'code', 'pass'].forEach((s) => { const el = $(`#tg-step-${s}`); if (el) el.hidden = s !== step; });
   const afterLogin = (r) => {
-    if (r.need_password) { show('pass'); $('#tg-pass').focus(); } else pageSettings();
+    if (r.need_password) { show('pass'); $('#tg-pass').focus(); } else reload();
   };
   $('#tg-send')?.addEventListener('click', () => run(async () => {
     $('#tg-send').disabled = true;
@@ -1300,13 +1407,13 @@ async function pageSettings() {
     afterLogin(await api('/api/tg/sign-in', {method: 'POST', body: {password: $('#tg-pass').value}}));
   }, tgErr));
   $('#tg-logout')?.addEventListener('click', () => confirm('להתנתק מחשבון הטלגרם? הספרייה ומעקב הצפייה יישמרו.') &&
-    run(async () => { await api('/api/tg/logout', {method: 'POST'}); pageSettings(); }));
+    run(async () => { await api('/api/tg/logout', {method: 'POST'}); reload(); }));
 
   // --- other settings
   $('#save-tmdb').onclick = () => run(async () => {
     await api('/api/settings', {method: 'POST', body: {tmdb_api_key: $('#tmdb-key').value.trim()}});
     if (auth) await api('/api/scan', {method: 'POST', body: {}});
-    pageSettings();
+    reload();
   });
   $('#sync-now').onclick = () => run(async () => {
     const out = $('#sync-status');
