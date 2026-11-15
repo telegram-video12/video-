@@ -97,6 +97,8 @@ class Database:
         if "branding" not in cols:
             self.conn.execute("ALTER TABLE chats ADD COLUMN branding TEXT")
         mcols = {r[1] for r in self.conn.execute("PRAGMA table_info(media)")}
+        if "auto_norm" not in mcols:  # the name key the automatic parser gave this video
+            self.conn.execute("ALTER TABLE media ADD COLUMN auto_norm TEXT")
         if "manual" not in mcols:  # set when you fix an episode/movie by hand; automatic regrouping skips it
             self.conn.execute("ALTER TABLE media ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
 
@@ -261,10 +263,10 @@ class Database:
             cur = self.conn.execute(
                 """INSERT OR IGNORE INTO media
                    (chat_id, msg_id, title_id, season, episode, file_name, caption, size, mime,
-                    duration, width, height, added_at)
+                    duration, width, height, added_at, auto_norm)
                    VALUES (:chat_id, :msg_id, :title_id, :season, :episode, :file_name, :caption, :size,
-                           :mime, :duration, :width, :height, :added_at)""",
-                m,
+                           :mime, :duration, :width, :height, :added_at, :auto_norm)""",
+                {"auto_norm": None, **m},
             )
             self.conn.commit()
             self.version += 1

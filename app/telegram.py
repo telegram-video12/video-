@@ -234,8 +234,8 @@ class Scanner:
         async with self._lock:
             self.status = {"running": True, "chat": None, "added": 0, "last_finished": self.status.get("last_finished"), "error": None}
             from .branding import VERSION as BRANDING_VERSION
-            changed = (any(c.get("branding") is None for c in self.db.chats(enabled_only=True))
-                       or self.db.get_pref("branding_version") != BRANDING_VERSION)
+            upgraded = self.db.get_pref("branding_version") != BRANDING_VERSION
+            changed = upgraded or any(c.get("branding") is None for c in self.db.chats(enabled_only=True))
             try:
                 for chat in self.db.chats(enabled_only=True):
                     if chat_ids and chat["id"] not in chat_ids:
@@ -256,7 +256,7 @@ class Scanner:
                         changed = True
                 if changed:  # learn channel signatures and re-file names (see branding.py)
                     self.status["chat"] = "מסדר שמות"
-                    await asyncio.to_thread(self._regroup_all, self.db)
+                    await asyncio.to_thread(self._regroup_all, self.db, upgraded)
                     self.db.set_pref("branding_version", BRANDING_VERSION)
                 if self.tmdb:  # posters are fetched in the background; scanning is not held up
                     self.start_tmdb()

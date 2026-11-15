@@ -42,8 +42,10 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
     info = parse_media(v.caption, v.file_name, fallback_name=chat.get("title", ""), branding=chat_branding(chat, db))
     if info.kind == "series" and not info.season_explicit and chat.get("default_season"):
         info.season = chat["default_season"]
-    title_id = db.get_or_create_title(info.kind, info.name, normalize(info.name) or info.name, info.year)
+    norm = normalize(info.name) or info.name
+    title_id = db.get_or_create_title(info.kind, info.name, norm, info.year)
     new_id = db.add_media(
+        auto_norm=norm,
         chat_id=v.chat_id,
         msg_id=v.msg_id,
         title_id=title_id,
@@ -67,7 +69,7 @@ def _corpus(db: Database) -> list:
     return [(r["caption"], r["duration"]) for r in db.q("SELECT caption, duration FROM media")]
 
 
-def regroup_chat(db: Database, chat_id: int, corpus: list | None = None) -> int:
+def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: bool = False) -> int:
     """Learn the channel's signature from all its captions and re-file its videos under clean names.
 
     Only videos that still sit where the automatic parser put them are moved, so manual
@@ -76,14 +78,14 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None) -> int:
     chat = db.get_chat(chat_id)
     if not chat:
         return 0
-    rows = db.q("SELECT m.id, m.caption, m.file_name, m.manual, m.duration, t.kind, t.norm_name FROM media m "
+    rows = db.q("SELECT m.id, m.caption, m.file_name, m.manual, m.duration, m.auto_norm, t.kind, t.norm_name FROM media m "
                 "JOIN titles t ON t.id = m.title_id WHERE m.chat_id = ?", (chat_id,))
     old = _stored(chat)  # what was used last time (auto + phrases)
     if corpus is None:
         corpus = _corpus(db)
     new = brand.combine(brand.detect([(r["caption"], r["duration"]) for r in rows], corpus), db.strip_phrases())
     db.x("UPDATE chats SET branding = ? WHERE id = ?", (json.dumps(new, ensure_ascii=False), chat_id))
-    if new == old:
+    if new == old and not force:
         return 0
     started = time.time()
     # 1. work out the moves (slow part, no lock held so the site stays responsive)
@@ -92,8 +94,7 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None) -> int:
         if r["manual"]:
             continue
         fallback = chat["title"]
-        before = {normalize(parse_media(r["caption"], r["file_name"], fallback, b).name) for b in (None, old)}
-        if r["norm_name"] not in before:
+        if r["auto_norm"] is not None and r["auto_norm"] != r["norm_name"]:
             continue  # merged or moved since it was added: leave it alone
         info = parse_media(r["caption"], r["file_name"], fallback, new)
         norm = normalize(info.name) or info.name
@@ -112,7 +113,7 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None) -> int:
                 cache[key] = row[0] if row else conn.execute(
                     "INSERT INTO titles (kind, name, norm_name, year, created_at) VALUES (?, ?, ?, ?, ?)",
                     (kind, name, norm, year, time.time())).lastrowid
-            conn.execute("UPDATE media SET title_id = ? WHERE id = ?", (cache[key], media_id))
+            conn.execute("UPDATE media SET title_id = ?, auto_norm = ? WHERE id = ?", (cache[key], norm, media_id))
         conn.execute("DELETE FROM titles WHERE id NOT IN (SELECT DISTINCT title_id FROM media)")
         conn.commit()
         db.version += 1
@@ -120,7 +121,11 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None) -> int:
     return len(moves)
 
 
-def regroup_all(db: Database) -> int:
-    """Re-learn every channel's signature (the whole library is used to confirm them)."""
+def regroup_all(db: Database, force: bool = False) -> int:
+    """Re-learn every channel's signature (the whole library is used to confirm them).
+    force: also re-file when only the name parser itself changed (after an update)."""
     corpus = _corpus(db)
-    return sum(regroup_chat(db, c["id"], corpus) for c in db.chats())
+    moved = sum(regroup_chat(db, c["id"], corpus, force) for c in db.chats())
+    db.x("UPDATE media SET auto_norm = (SELECT norm_name FROM titles t WHERE t.id = media.title_id) "
+         "WHERE auto_norm IS NULL AND manual = 0")
+    return moved

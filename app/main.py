@@ -29,6 +29,7 @@ from .tmdb import TMDB
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
 logging.getLogger("telethon").setLevel(logging.WARNING)  # keep the Termux screen readable
+logging.getLogger("httpx").setLevel(logging.WARNING)     # its request log would print the TMDB key
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "tgv_session"

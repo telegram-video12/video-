@@ -49,3 +49,13 @@ def test_movie_hebrew_caption():
 def test_normalize_groups_variants():
     assert normalize("The Office") == normalize("office")
     assert normalize("Grey's Anatomy") == normalize("Greys  Anatomy")
+
+
+@pytest.mark.parametrize("caption,name,year", [
+    ("תעלומות למתחילים : תזמון רצחני - ז'אנר : פשע דרמה מסתורין תעלומות למתחילים היא סדרת סרטי פשע", "תעלומות למתחילים : תזמון רצחני", None),
+    ("ספיידרמן: השיבה הביתה (2017) | ז׳אנר: אקשן | בימוי: ג׳ון ווטס", "ספיידרמן: השיבה הביתה", 2017),
+    ("מלך האריות 2019 עלילה: סימבה הוא נסיך", "מלך האריות", 2019),
+])
+def test_description_is_not_part_of_the_name(caption, name, year):
+    info = parse_media(caption, None)
+    assert (info.name, info.year) == (name, year)

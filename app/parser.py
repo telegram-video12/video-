@@ -64,8 +64,18 @@ UPLOADER_RE = re.compile(
 )
 
 
+# Where a caption stops being the name and starts describing the movie
+DESCRIPTION_RE = re.compile(
+    r"(?:^|[\s\-–—|:•·,(])(?:ז['׳]?אנר(?:ים)?|סוגה|תקציר|עלילה|על\s+ה(?:סרט|סדרה)|תיאור|בימוי|במאי|שחקנים|"
+    r"משתתפים|כיכוב|בכיכוב|שפה|אורך|דירוג|ציון|IMDb|genre|plot|synopsis|starring|director|cast)\b.*$",
+    re.I | re.S,
+)
+MAX_NAME_WORDS = 9
+
+
 def clean_name(text: str) -> str:
     text = VIDEO_EXT_RE.sub("", text)
+    text = DESCRIPTION_RE.sub(" ", text)
     text = UPLOADER_RE.sub(" ", text)
     text = text.replace("#", " ")
     text = re.sub(r"@\w+", " ", text)  # channel mentions
@@ -78,7 +88,11 @@ def clean_name(text: str) -> str:
     text = text.strip(" -:|,–—")
     # "הסרט: X" / "סדרה - X" -> "X"
     text = re.sub(r"^(?:הסרט|סרט|הסדרה|סדרה|movie|film)\s*[:\-–]?\s+(?=\S)", "", text, flags=re.I)
-    return text
+    words = text.split()
+    if len(words) > MAX_NAME_WORDS:  # still a sentence: keep the part before " - " / the first words
+        head = re.split(r"\s[-–—|]\s", text)[0].split()
+        text = " ".join(head if 0 < len(head) <= MAX_NAME_WORDS else words[:MAX_NAME_WORDS // 2 + 1])
+    return text.strip(" -:|,–—")
 
 
 QUALITY_RE = re.compile(r"(?<!\d)(2160|1440|1080|720|576|480|360|240)[pi](?![a-z])", re.I)

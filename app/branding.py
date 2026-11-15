@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 
 from .parser import EPISODE_PATTERNS, clean_name, normalize
 
-VERSION = "2"  # bump when detection changes, so existing libraries are re-filed once
+VERSION = "3"  # bump when detection changes, so existing libraries are re-filed once
 MIN_MOVIES = 20        # need this many movie captions in a channel before guessing
 MIN_COUNT = 10         # a signature must appear at least this often...
 MIN_SHARE = 0.005      # ...and in at least 0.5% of the channel's movies (big "archive" channels mix many sources)
