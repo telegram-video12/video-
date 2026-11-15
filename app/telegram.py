@@ -56,24 +56,72 @@ def message_to_video(chat_id: int, msg) -> VideoMessage | None:
 
 
 class TelegramService:
-    def __init__(self, api_id: int, api_hash: str, session_path: str):
-        self.configured = bool(api_id and api_hash)
-        self.client = TelegramClient(session_path, api_id, api_hash) if self.configured else None
+    def __init__(self, session_path: str, api_id: int = 0, api_hash: str = ""):
+        self.session_path = session_path
+        self.api_id, self.api_hash = api_id, api_hash
+        self.client: TelegramClient | None = None
         self._msg_cache: dict[tuple[int, int], tuple[float, object]] = {}
         self.authorized = False
+        self._phone: str | None = None
+        self._phone_code_hash: str | None = None
 
-    async def start(self) -> None:
-        if not self.client:
-            log.warning("Telegram API credentials missing (TG_API_ID / TG_API_HASH)")
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_id and self.api_hash)
+
+    async def start(self, api_id: int | None = None, api_hash: str | None = None) -> None:
+        """(Re)connect, optionally with new API credentials."""
+        if api_id is not None:
+            self.api_id, self.api_hash = int(api_id or 0), api_hash or ""
+        await self.stop()
+        if not self.configured:
+            log.warning("Telegram API credentials missing - set them in the website settings")
             return
+        self.client = TelegramClient(self.session_path, self.api_id, self.api_hash)
         await self.client.connect()
         self.authorized = await self.client.is_user_authorized()
         if not self.authorized:
-            log.warning("Telegram session not logged in. Run: python -m app.login")
+            log.warning("Telegram not logged in yet - log in from the website settings")
 
     async def stop(self) -> None:
         if self.client:
             await self.client.disconnect()
+        self.client = None
+        self.authorized = False
+
+    # ------------------------------------------------------------ web login
+    async def send_code(self, phone: str) -> None:
+        if not self.client:
+            raise RuntimeError("צריך קודם להזין API ID ו-API Hash")
+        if not self.client.is_connected():
+            await self.client.connect()
+        sent = await self.client.send_code_request(phone)
+        self._phone, self._phone_code_hash = phone, sent.phone_code_hash
+
+    async def sign_in_code(self, code: str) -> bool:
+        """Returns True when logged in, False when a 2FA password is still needed."""
+        from telethon.errors import SessionPasswordNeededError
+
+        if not self.client or not self._phone:
+            raise RuntimeError("צריך קודם לשלוח קוד")
+        try:
+            await self.client.sign_in(self._phone, code, phone_code_hash=self._phone_code_hash)
+        except SessionPasswordNeededError:
+            return False
+        self.authorized = True
+        return True
+
+    async def sign_in_password(self, password: str) -> None:
+        if not self.client:
+            raise RuntimeError("צריך קודם לשלוח קוד")
+        await self.client.sign_in(password=password)
+        self.authorized = True
+
+    async def log_out(self) -> None:
+        if self.client and self.authorized:
+            await self.client.log_out()
+        self.authorized = False
+        await self.start()
 
     def _require(self) -> TelegramClient:
         if not self.client or not self.authorized:
@@ -81,7 +129,7 @@ class TelegramService:
         return self.client
 
     async def me(self) -> dict | None:
-        if not self.authorized:
+        if not self.authorized or not self.client:
             return None
         u = await self.client.get_me()
         return {"name": " ".join(filter(None, [u.first_name, u.last_name])), "username": u.username}

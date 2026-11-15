@@ -1,4 +1,7 @@
-"""Web server: private site with library, player, progress tracking and settings."""
+"""Web server: private site with library, player, progress tracking and settings.
+
+Built on Starlette (pure Python) so it installs on Android/Termux without compiling.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,10 +13,13 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
+from . import crypto_boost
 from .config import Settings
 from .db import Database
 from .parser import normalize
@@ -25,43 +31,75 @@ log = logging.getLogger("app")
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "tgv_session"
-SESSION_DAYS = 90
+SESSION_DAYS = 365
+PUBLIC_PATHS = {"/login", "/api/login", "/api/setup", "/api/setup-state", "/manifest.json"}
 
 
-def create_app(settings: Settings | None = None, tg: TelegramService | None = None) -> FastAPI:
+class ApiError(Exception):
+    def __init__(self, status: int, detail: str = ""):
+        self.status, self.detail = status, detail or "שגיאה"
+
+
+def ok(data=None, status: int = 200) -> JSONResponse:
+    return JSONResponse({"ok": True} if data is None else data, status_code=status)
+
+
+async def body(request: Request) -> dict:
+    try:
+        data = await request.json()
+        return data if isinstance(data, dict) else {}
+    except ValueError:
+        return {}
+
+
+def telegram_error_message(e: Exception) -> str:
+    name = type(e).__name__
+    return {
+        "PhoneNumberInvalidError": "מספר הטלפון לא תקין. כתוב אותו עם קידומת, למשל +972501234567",
+        "PhoneCodeInvalidError": "הקוד שגוי, נסה שוב",
+        "PhoneCodeExpiredError": "הקוד פג תוקף. בקש קוד חדש",
+        "PasswordHashInvalidError": "סיסמת האימות הדו-שלבי שגויה",
+        "ApiIdInvalidError": "ה-API ID או ה-API Hash שגויים. בדוק אותם שוב ב-my.telegram.org",
+        "FloodWaitError": f"טלגרם ביקשה להמתין {getattr(e, 'seconds', '')} שניות לפני ניסיון נוסף",
+        "PhoneNumberBannedError": "המספר חסום בטלגרם",
+    }.get(name, str(e) or name)
+
+
+class AuthMiddleware:
+    """Pure ASGI middleware (keeps video streaming efficient)."""
+
+    def __init__(self, app, settings: Settings, valid_token):
+        self.app, self.settings, self.valid_token = app, settings, valid_token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope["path"]
+        if path in PUBLIC_PATHS or path.startswith("/static/"):
+            return await self.app(scope, receive, send)
+        request = Request(scope)
+        if self.settings.needs_setup or not self.valid_token(request.cookies.get(COOKIE)):
+            if path.startswith("/api/"):
+                resp = JSONResponse({"detail": "login required"}, status_code=401)
+            else:
+                resp = RedirectResponse("/login", status_code=302)
+            return await resp(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+def create_app(settings: Settings | None = None, tg: TelegramService | None = None) -> Starlette:
     settings = settings or Settings()
     db = Database(settings.db_path)
-    tg = tg or TelegramService(settings.api_id, settings.api_hash, str(settings.session_path))
-    tmdb = TMDB(settings.tmdb_api_key) if settings.tmdb_api_key else None
-    scanner = Scanner(db, tg, tmdb, settings.min_duration_seconds)
+    tg = tg or TelegramService(str(settings.session_path), settings.api_id, settings.api_hash)
+    scanner = Scanner(db, tg, TMDB(settings.tmdb_api_key) if settings.tmdb_api_key else None,
+                      settings.min_duration_seconds)
     secret = settings.secret_key.encode()
+    log.info("AES backend: %s", crypto_boost.install())
 
-    async def periodic_scan() -> None:
-        while True:
-            await asyncio.sleep(max(1, settings.scan_interval_minutes) * 60)
-            if tg.authorized:
-                await scanner.scan()
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        try:
-            await tg.start()
-        except Exception:  # noqa: BLE001 - site still works for browsing the library
-            log.exception("could not connect to Telegram")
-        task = asyncio.create_task(periodic_scan()) if settings.scan_interval_minutes > 0 else None
-        yield
-        if task:
-            task.cancel()
-        await tg.stop()
-
-    app = FastAPI(title="TG Video", lifespan=lifespan, docs_url=None, redoc_url=None)
-    app.state.db, app.state.tg, app.state.scanner = db, tg, scanner
-
-    # ------------------------------------------------------------------ auth
+    # ------------------------------------------------------------ auth utils
     def make_token() -> str:
         exp = str(int(time.time()) + SESSION_DAYS * 86400)
-        sig = hmac.new(secret, exp.encode(), hashlib.sha256).hexdigest()
-        return f"{exp}.{sig}"
+        return f"{exp}.{hmac.new(secret, exp.encode(), hashlib.sha256).hexdigest()}"
 
     def valid_token(token: str | None) -> bool:
         if not token or "." not in token:
@@ -70,49 +108,60 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         good = hmac.new(secret, exp.encode(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(sig, good) and exp.isdigit() and int(exp) > time.time()
 
-    @app.middleware("http")
-    async def require_login(request: Request, call_next):
-        path = request.url.path
-        public = path in ("/login", "/api/login") or path.startswith("/static/")
-        if not public and not valid_token(request.cookies.get(COOKIE)):
-            if path.startswith("/api/"):
-                return JSONResponse({"detail": "login required"}, status_code=401)
-            return RedirectResponse("/login")
-        return await call_next(request)
-
-    _attempts: list[float] = []
-
-    @app.post("/api/login")
-    async def login(payload: dict = Body(...)):
-        now = time.time()
-        _attempts[:] = [t for t in _attempts if now - t < 60]
-        if len(_attempts) >= 10:
-            raise HTTPException(429, "יותר מדי ניסיונות, נסה שוב בעוד דקה")
-        _attempts.append(now)
-        if not settings.site_password:
-            raise HTTPException(500, "SITE_PASSWORD לא הוגדר בקובץ .env")
-        if not hmac.compare_digest(str(payload.get("password", "")), settings.site_password):
-            raise HTTPException(401, "סיסמה שגויה")
-        resp = JSONResponse({"ok": True})
+    def logged_in(resp: JSONResponse) -> JSONResponse:
         resp.set_cookie(COOKIE, make_token(), max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax")
         return resp
 
-    @app.post("/api/logout")
-    async def logout():
-        resp = JSONResponse({"ok": True})
+    attempts: list[float] = []
+
+    async def setup_state(request: Request):
+        return ok({"needs_setup": settings.needs_setup})
+
+    async def setup(request: Request):
+        if not settings.needs_setup:
+            raise ApiError(403, "הסיסמה כבר הוגדרה")
+        pw = str((await body(request)).get("password", ""))
+        if len(pw) < 4:
+            raise ApiError(400, "הסיסמה צריכה להיות לפחות 4 תווים")
+        settings.set_password(pw)
+        return logged_in(ok())
+
+    async def login(request: Request):
+        now = time.time()
+        attempts[:] = [t for t in attempts if now - t < 60]
+        if len(attempts) >= 10:
+            raise ApiError(429, "יותר מדי ניסיונות, נסה שוב בעוד דקה")
+        attempts.append(now)
+        if settings.needs_setup:
+            raise ApiError(400, "צריך קודם לבחור סיסמה")
+        if not settings.check_password(str((await body(request)).get("password", ""))):
+            raise ApiError(401, "סיסמה שגויה")
+        return logged_in(ok())
+
+    async def logout(request: Request):
+        resp = ok()
         resp.delete_cookie(COOKIE)
         return resp
 
+    async def change_password(request: Request):
+        data = await body(request)
+        if not settings.check_password(str(data.get("current", ""))):
+            raise ApiError(401, "הסיסמה הנוכחית שגויה")
+        new = str(data.get("new", ""))
+        if len(new) < 4:
+            raise ApiError(400, "הסיסמה צריכה להיות לפחות 4 תווים")
+        settings.set_password(new)
+        return ok()
+
     # ----------------------------------------------------------------- pages
-    @app.get("/login")
-    async def login_page():
+    async def login_page(request: Request):
         return FileResponse(STATIC / "login.html")
 
-    @app.get("/")
-    async def index():
+    async def index(request: Request):
         return FileResponse(STATIC / "index.html")
 
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    async def manifest(request: Request):
+        return FileResponse(STATIC / "manifest.json", media_type="application/manifest+json")
 
     # --------------------------------------------------------------- library
     def thumb_url(media_id: int | None) -> str | None:
@@ -136,45 +185,44 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "thumb": thumb_url(m["id"]),
         }
 
-    @app.get("/api/library")
-    async def library():
+    async def library(request: Request):
         titles = []
         for t in db.list_titles():
             t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
             titles.append(t)
         cont = [
             {
-                "title": {"id": c["title"]["id"], "name": c["title"]["name"], "kind": c["title"]["kind"],
-                          "backdrop": c["title"]["backdrop"], "poster": c["title"]["poster"]},
+                "title": {k: c["title"][k] for k in ("id", "name", "kind", "backdrop", "poster")},
                 "media": media_out(c["media"]),
                 "position": c["position"],
                 "state": c["state"],
             }
             for c in db.continue_watching()
         ]
-        return {"titles": titles, "continue": cont}
+        return ok({"titles": titles, "continue": cont})
 
-    @app.get("/api/titles/{title_id}")
-    async def title_detail(title_id: int, hidden: bool = False):
+    async def title_detail(request: Request):
+        title_id = request.path_params["id"]
         t = db.get_title(title_id)
         if not t:
-            raise HTTPException(404, "לא נמצא")
+            raise ApiError(404, "לא נמצא")
+        hidden = request.query_params.get("hidden") in ("1", "true")
         items = [media_out(m) for m in db.title_media(title_id, include_hidden=hidden)]
         if not t["poster"] and items:
             t["poster"] = items[0]["thumb"]
         resume = db.resume_point(title_id)
-        return {
+        return ok({
             "title": t,
             "media": items,
             "resume": {"media": media_out(resume["media"]), "position": resume["position"], "state": resume["state"]}
             if resume else None,
-        }
+        })
 
-    @app.patch("/api/titles/{title_id}")
-    async def edit_title(title_id: int, payload: dict = Body(...)):
-        t = db.get_title(title_id)
-        if not t:
-            raise HTTPException(404)
+    async def edit_title(request: Request):
+        title_id = request.path_params["id"]
+        if not db.get_title(title_id):
+            raise ApiError(404)
+        payload = await body(request)
         fields = {}
         if payload.get("name"):
             fields["name"] = str(payload["name"]).strip()
@@ -188,29 +236,31 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             fields["poster"] = payload["poster"] or None
         try:
             db.update_title(title_id, **fields)
-        except Exception as e:  # unique (kind, norm_name) clash etc.
-            raise HTTPException(400, str(e)) from e
+        except Exception as e:  # noqa: BLE001 - e.g. unique (kind, norm_name) clash
+            raise ApiError(400, str(e)) from e
+        tmdb = scanner.tmdb
         if payload.get("tmdb_id") and tmdb:
-            tid = int(re.sub(r"\D", "", str(payload["tmdb_id"])) or 0)
-            if tid:
-                await tmdb.enrich_title(db, db.get_title(title_id), tmdb_id=tid)
+            m = re.search(r"\d+", str(payload["tmdb_id"]))
+            if m:
+                await tmdb.enrich_title(db, db.get_title(title_id), tmdb_id=int(m.group()))
         elif payload.get("refresh_tmdb") and tmdb:
             await tmdb.enrich_title(db, db.get_title(title_id))
-        return db.get_title(title_id)
+        return ok(db.get_title(title_id))
 
-    @app.post("/api/titles/{title_id}/merge")
-    async def merge_title(title_id: int, payload: dict = Body(...)):
-        target = int(payload.get("into", 0))
+    async def merge_title(request: Request):
+        title_id = request.path_params["id"]
+        target = int((await body(request)).get("into") or 0)
         if target == title_id or not db.get_title(target) or not db.get_title(title_id):
-            raise HTTPException(400, "יעד לא תקין")
+            raise ApiError(400, "יעד לא תקין")
         db.merge_titles(title_id, target)
-        return {"ok": True, "title_id": target}
+        return ok({"ok": True, "title_id": target})
 
-    @app.patch("/api/media/{media_id}")
-    async def edit_media(media_id: int, payload: dict = Body(...)):
+    async def edit_media(request: Request):
+        media_id = request.path_params["id"]
         m = db.get_media(media_id)
         if not m:
-            raise HTTPException(404)
+            raise ApiError(404)
+        payload = await body(request)
         fields = {}
         for key in ("season", "episode"):
             if key in payload:
@@ -224,56 +274,55 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             fields["title_id"] = db.get_or_create_title(kind, name, normalize(name) or name, None)
         db.update_media(media_id, **fields)
         db.delete_empty_titles()
-        return media_out(db.get_media(media_id))
+        return ok(media_out(db.get_media(media_id)))
 
-    @app.get("/api/media/{media_id}")
-    async def media_detail(media_id: int):
+    async def media_detail(request: Request):
+        media_id = request.path_params["id"]
         m = db.get_media(media_id)
         if not m:
-            raise HTTPException(404, "לא נמצא")
+            raise ApiError(404, "לא נמצא")
         prev, nxt = db.neighbours(media_id)
-        return {
+        return ok({
             "media": media_out(m),
             "title": db.get_title(m["title_id"]),
             "prev": media_out(prev) if prev else None,
             "next": media_out(nxt) if nxt else None,
-        }
+        })
 
     # -------------------------------------------------------------- progress
-    @app.post("/api/progress/{media_id}")
-    async def save_progress(media_id: int, payload: dict = Body(...)):
+    async def save_progress(request: Request):
+        media_id = request.path_params["id"]
+        payload = await body(request)
         try:
-            position = float(payload.get("position", 0))
+            position = float(payload.get("position") or 0)
             duration = float(payload["duration"]) if payload.get("duration") else None
         except (TypeError, ValueError) as e:
-            raise HTTPException(400, "bad values") from e
+            raise ApiError(400, "bad values") from e
         if not db.get_media(media_id):
-            raise HTTPException(404)
-        completed = db.save_progress(media_id, max(0.0, position), duration)
-        return {"ok": True, "completed": completed}
+            raise ApiError(404)
+        return ok({"ok": True, "completed": db.save_progress(media_id, max(0.0, position), duration)})
 
-    @app.post("/api/watched/{media_id}")
-    async def set_watched(media_id: int, payload: dict = Body(...)):
+    async def set_watched(request: Request):
+        media_id = request.path_params["id"]
         if not db.get_media(media_id):
-            raise HTTPException(404)
-        db.mark_watched(media_id, bool(payload.get("watched")))
-        return {"ok": True}
+            raise ApiError(404)
+        db.mark_watched(media_id, bool((await body(request)).get("watched")))
+        return ok()
 
     # ------------------------------------------------------------- streaming
-    RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+    range_re = re.compile(r"bytes=(\d*)-(\d*)")
 
-    @app.get("/api/stream/{media_id}")
-    async def stream(media_id: int, request: Request):
-        m = db.get_media(media_id)
+    async def stream(request: Request):
+        m = db.get_media(request.path_params["id"])
         if not m:
-            raise HTTPException(404)
+            raise ApiError(404)
         if not tg.authorized:
-            raise HTTPException(503, "טלגרם לא מחובר")
+            raise ApiError(503, "טלגרם לא מחובר")
         size = m["size"]
         start, end, status = 0, size - 1, 200
         rng = request.headers.get("range")
         if rng:
-            match = RANGE_RE.match(rng.strip())
+            match = range_re.match(rng.strip())
             if match:
                 s, e = match.groups()
                 if s:
@@ -288,7 +337,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         try:
             await tg.get_message(m["chat_id"], m["msg_id"])
         except FileNotFoundError as e:
-            raise HTTPException(410, "הקובץ נמחק מטלגרם") from e
+            raise ApiError(410, "הקובץ נמחק מטלגרם") from e
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
@@ -296,68 +345,159 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         }
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
-        mime = m["mime"] or "video/mp4"
         return StreamingResponse(tg.stream(m["chat_id"], m["msg_id"], start, end), status_code=status,
-                                 headers=headers, media_type=mime)
+                                 headers=headers, media_type=m["mime"] or "video/mp4")
 
-    @app.get("/api/thumb/{media_id}")
-    async def thumb(media_id: int):
+    async def thumb(request: Request):
+        media_id = request.path_params["id"]
         path = settings.data_dir / "thumbs" / f"{media_id}.jpg"
         missing = settings.data_dir / "thumbs" / f"{media_id}.none"
         if not path.exists():
             m = db.get_media(media_id)
             if not m or missing.exists() or not tg.authorized:
-                raise HTTPException(404)
+                raise ApiError(404)
             try:
                 data = await tg.thumbnail(m["chat_id"], m["msg_id"])
             except Exception:  # noqa: BLE001
                 data = None
             if not data:
                 missing.touch()
-                raise HTTPException(404)
+                raise ApiError(404)
             path.write_bytes(data)
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
 
     # -------------------------------------------------------------- settings
-    @app.get("/api/status")
-    async def status():
-        return {
+    async def status(request: Request):
+        return ok({
             "telegram_configured": tg.configured,
             "telegram_authorized": tg.authorized,
+            "api_id": settings.api_id or None,
             "me": await tg.me() if tg.authorized else None,
-            "tmdb": bool(tmdb),
+            "tmdb": bool(scanner.tmdb),
             "scan": scanner.status,
             "chats": db.chats(),
             "scan_interval_minutes": settings.scan_interval_minutes,
-        }
+        })
 
-    @app.get("/api/dialogs")
-    async def dialogs():
+    async def save_settings(request: Request):
+        payload = await body(request)
+        if "tmdb_api_key" in payload:
+            key = str(payload["tmdb_api_key"] or "").strip()
+            settings.save(tmdb_api_key=key)
+            scanner.tmdb = TMDB(key) if key else None
+            if key:  # look up titles that were added before the key existed
+                db.x("UPDATE titles SET tmdb_checked = 0 WHERE tmdb_id IS NULL")
+        if "api_id" in payload or "api_hash" in payload:
+            api_id = re.sub(r"\D", "", str(payload.get("api_id") or ""))
+            api_hash = str(payload.get("api_hash") or "").strip()
+            if not api_id or not re.fullmatch(r"[0-9a-fA-F]{32}", api_hash):
+                raise ApiError(400, "API ID צריך להיות מספר, ו-API Hash צריך להיות 32 תווים (אותיות a-f ומספרים)")
+            settings.save(api_id=api_id, api_hash=api_hash)
+            try:
+                await tg.start(int(api_id), api_hash)
+            except Exception as e:  # noqa: BLE001
+                raise ApiError(400, telegram_error_message(e)) from e
+        return ok()
+
+    async def tg_send_code(request: Request):
+        phone = re.sub(r"[\s\-()]", "", str((await body(request)).get("phone", "")))
+        if phone.startswith("0"):
+            phone = "+972" + phone[1:]  # Israeli local format
+        if not re.fullmatch(r"\+?\d{8,15}", phone):
+            raise ApiError(400, "מספר טלפון לא תקין")
+        try:
+            await tg.send_code(phone)
+        except Exception as e:  # noqa: BLE001
+            raise ApiError(400, telegram_error_message(e)) from e
+        return ok({"ok": True, "phone": phone})
+
+    async def tg_sign_in(request: Request):
+        data = await body(request)
+        try:
+            if data.get("password"):
+                await tg.sign_in_password(str(data["password"]))
+                done = True
+            else:
+                done = await tg.sign_in_code(re.sub(r"\D", "", str(data.get("code", ""))))
+        except Exception as e:  # noqa: BLE001
+            raise ApiError(400, telegram_error_message(e)) from e
+        return ok({"ok": True, "done": done, "need_password": not done})
+
+    async def tg_logout(request: Request):
+        await tg.log_out()
+        return ok()
+
+    async def dialogs(request: Request):
         if not tg.authorized:
-            raise HTTPException(503, "טלגרם לא מחובר. הרץ: python -m app.login")
+            raise ApiError(503, "טלגרם לא מחובר")
         selected = {c["id"]: c for c in db.chats()}
         out = await tg.list_dialogs()
         for d in out:
             d["enabled"] = bool(selected.get(d["id"], {}).get("enabled"))
-        return out
+        return ok(out)
 
-    @app.post("/api/chats")
-    async def set_chats(payload: dict = Body(...)):
-        for c in payload.get("chats", []):
+    async def set_chats(request: Request):
+        for c in (await body(request)).get("chats", []):
             db.upsert_chat(int(c["id"]), str(c.get("title") or c["id"]), bool(c.get("enabled")))
-        return db.chats()
+        return ok(db.chats())
 
-    @app.post("/api/scan")
-    async def start_scan(payload: dict = Body(default={})):
+    async def start_scan(request: Request):
         if not tg.authorized:
-            raise HTTPException(503, "טלגרם לא מחובר")
-        if payload.get("full"):
+            raise ApiError(503, "טלגרם לא מחובר")
+        if (await body(request)).get("full"):
             for c in db.chats():
                 db.reset_chat(c["id"])
         if not scanner.status.get("running"):
             asyncio.create_task(scanner.scan())
             await asyncio.sleep(0)
-        return scanner.status
+        return ok(scanner.status)
 
+    # ------------------------------------------------------------- lifecycle
+    async def periodic_scan() -> None:
+        while True:
+            await asyncio.sleep(max(1, settings.scan_interval_minutes) * 60)
+            if tg.authorized:
+                await scanner.scan()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            await tg.start()
+        except Exception:  # noqa: BLE001 - site still works for browsing the library
+            log.exception("could not connect to Telegram")
+        task = asyncio.create_task(periodic_scan()) if settings.scan_interval_minutes > 0 else None
+        if tg.authorized:
+            asyncio.create_task(scanner.scan())  # pick up new episodes on start
+        yield
+        if task:
+            task.cancel()
+        await tg.stop()
+
+    async def api_error(request: Request, exc: ApiError):
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status)
+
+    R = Route
+    routes = [
+        R("/", index), R("/login", login_page), R("/manifest.json", manifest),
+        R("/api/setup-state", setup_state), R("/api/setup", setup, methods=["POST"]),
+        R("/api/login", login, methods=["POST"]), R("/api/logout", logout, methods=["POST"]),
+        R("/api/password", change_password, methods=["POST"]),
+        R("/api/library", library),
+        R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),
+        R("/api/titles/{id:int}/merge", merge_title, methods=["POST"]),
+        R("/api/media/{id:int}", media_detail), R("/api/media/{id:int}", edit_media, methods=["PATCH"]),
+        R("/api/progress/{id:int}", save_progress, methods=["POST"]),
+        R("/api/watched/{id:int}", set_watched, methods=["POST"]),
+        R("/api/stream/{id:int}", stream), R("/api/thumb/{id:int}", thumb),
+        R("/api/status", status), R("/api/settings", save_settings, methods=["POST"]),
+        R("/api/tg/send-code", tg_send_code, methods=["POST"]),
+        R("/api/tg/sign-in", tg_sign_in, methods=["POST"]),
+        R("/api/tg/logout", tg_logout, methods=["POST"]),
+        R("/api/dialogs", dialogs), R("/api/chats", set_chats, methods=["POST"]),
+        R("/api/scan", start_scan, methods=["POST"]),
+        Mount("/static", StaticFiles(directory=STATIC), name="static"),
+    ]
+    app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={ApiError: api_error})
+    app.add_middleware(AuthMiddleware, settings=settings, valid_token=valid_token)
+    app.state.db, app.state.tg, app.state.scanner, app.state.settings = db, tg, scanner, settings
     return app
-

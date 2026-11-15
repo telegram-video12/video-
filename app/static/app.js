@@ -54,7 +54,7 @@ async function route() {
   const [path] = hash.split('?');
   const parts = path.split('/').filter(Boolean);
   window.scrollTo(0, 0);
-  $search.style.visibility = parts.length === 0 ? 'visible' : 'hidden';
+  $search.style.display = parts.length === 0 ? '' : 'none';
   try {
     if (parts[0] === 'title') await pageTitle(+parts[1]);
     else if (parts[0] === 'watch') await pageWatch(+parts[1]);
@@ -447,41 +447,146 @@ async function pageWatch(id) {
 }
 
 // ----------------------------------------------------------------- settings
+function telegramPanel(st) {
+  if (st.telegram_authorized) {
+    return `<div class="status-line"><span class="status-dot on"></span>
+        מחובר לטלגרם בתור <b>${esc(st.me?.name || '')}</b> ${st.me?.username ? '@' + esc(st.me.username) : ''}</div>
+      <button class="btn small danger" id="tg-logout" style="margin-top:12px">התנתק מטלגרם</button>`;
+  }
+  if (!st.telegram_configured) {
+    return `<div class="status-line"><span class="status-dot"></span> שלב 1 מתוך 2: מפתחות API</div>
+      <ol class="steps">
+        <li>פתח את <a class="link" href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a> והתחבר עם מספר הטלפון שלך. הקוד יגיע אליך באפליקציית טלגרם.</li>
+        <li>לחץ על <b>API development tools</b>.</li>
+        <li>מלא את <b>App title</b> ואת <b>Short name</b> (כל שם באנגלית, למשל <code>myvideos</code>), ולחץ <b>Create application</b>.</li>
+        <li>העתק לכאן את <b>App api_id</b> ואת <b>App api_hash</b>.</li>
+      </ol>
+      <div class="form-grid">
+        <label class="field">API ID<input class="input" id="api-id" inputmode="numeric" dir="ltr" placeholder="1234567"></label>
+        <label class="field">API Hash<input class="input" id="api-hash" dir="ltr" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="32 תווים"></label>
+      </div>
+      <button class="btn primary" id="save-api">שמור והמשך</button>`;
+  }
+  return `<div class="status-line"><span class="status-dot"></span> שלב 2 מתוך 2: התחברות לחשבון</div>
+    <div id="tg-step-phone">
+      <p class="muted">הכנס את מספר הטלפון של חשבון הטלגרם. קוד יישלח אליך <b>באפליקציית טלגרם</b>.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="input" id="tg-phone" type="tel" dir="ltr" placeholder="050-1234567" style="flex:1;min-width:180px">
+        <button class="btn primary" id="tg-send">שלח קוד</button>
+      </div>
+    </div>
+    <div id="tg-step-code" hidden>
+      <p class="muted">הקלד את הקוד שקיבלת בטלגרם (5 ספרות):</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="input" id="tg-code" inputmode="numeric" dir="ltr" autocomplete="one-time-code" style="flex:1;min-width:140px">
+        <button class="btn primary" id="tg-code-go">התחבר</button>
+      </div>
+    </div>
+    <div id="tg-step-pass" hidden>
+      <p class="muted">לחשבון שלך יש אימות דו-שלבי. הכנס את הסיסמה שלו:</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="input" id="tg-pass" type="password" style="flex:1;min-width:160px">
+        <button class="btn primary" id="tg-pass-go">התחבר</button>
+      </div>
+    </div>
+    <div class="err-line" id="tg-err"></div>
+    <button class="btn small" id="reset-api" style="margin-top:14px">החלף API ID / Hash</button>`;
+}
+
 async function pageSettings() {
   $app.innerHTML = '<div class="spinner"></div>';
   const st = await api('/api/status');
-
-  const tgPanel = st.telegram_authorized
-    ? `<div class="status-line"><span class="status-dot on"></span> מחובר לטלגרם בתור <b>${esc(st.me?.name || '')}</b> ${st.me?.username ? '@' + esc(st.me.username) : ''}</div>`
-    : `<div class="status-line"><span class="status-dot"></span> טלגרם לא מחובר</div>
-       <ol class="muted">
-         ${st.telegram_configured ? '' : '<li>מלא <code>TG_API_ID</code> ו-<code>TG_API_HASH</code> בקובץ <code>.env</code> (מ-my.telegram.org)</li>'}
-         <li>עצור את השרת והרץ בטרמינל: <code>python -m app.login</code></li>
-         <li>הפעל שוב את השרת: <code>python -m app</code></li>
-       </ol>`;
+  const auth = st.telegram_authorized;
 
   $app.innerHTML = `
     <h1 style="margin-bottom:20px">הגדרות</h1>
-    <div class="panel"><h3>חיבור לטלגרם</h3>${tgPanel}
-      <p class="muted" style="margin-bottom:0">פוסטרים ותקצירים מ-TMDB: ${st.tmdb ? '✓ פעיל' : 'לא פעיל (אפשר להוסיף <code>TMDB_API_KEY</code> בקובץ <code>.env</code>)'}</p>
+    <div class="panel"><h3>חיבור לטלגרם</h3>${telegramPanel(st)}</div>
+    <div class="panel" ${auth ? '' : 'hidden'}><h3>קבוצות וערוצים</h3>
+      <p class="muted" style="margin-top:0">סמן את הקבוצות שמהן ייאספו הסדרות והסרטים.</p>
+      <div id="chats">${auth ? '<div class="spinner"></div>' : ''}</div>
     </div>
-    <div class="panel"><h3>סריקה</h3>
+    <div class="panel" ${auth ? '' : 'hidden'}><h3>סריקה</h3>
       <div id="scan-status" class="muted"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        <button class="btn primary" id="scan" ${st.telegram_authorized ? '' : 'disabled'}>סרוק עכשיו</button>
-        <button class="btn" id="scan-full" ${st.telegram_authorized ? '' : 'disabled'}>סריקה מלאה מההתחלה</button>
+        <button class="btn primary" id="scan">סרוק עכשיו</button>
+        <button class="btn" id="scan-full">סריקה מלאה מההתחלה</button>
       </div>
-      <p class="muted" style="font-size:13px;margin-bottom:0">סריקה אוטומטית: ${st.scan_interval_minutes ? `כל ${st.scan_interval_minutes} דקות` : 'כבויה'}. סריקה מלאה לא מוחקת עריכות שעשית.</p>
+      <p class="muted" style="font-size:13px;margin-bottom:0">כל עוד האתר פועל, הוא סורק לבד ${st.scan_interval_minutes ? `כל ${st.scan_interval_minutes} דקות` : ''} ובכל הפעלה. סריקה מלאה לא מוחקת עריכות שעשית.</p>
     </div>
-    <div class="panel"><h3>קבוצות וערוצים</h3>
-      <p class="muted" style="margin-top:0">סמן את הקבוצות שמהן ייאספו הסדרות והסרטים.</p>
-      <div id="chats">${st.telegram_authorized ? '<div class="spinner"></div>' : '<p class="muted">יש להתחבר לטלגרם קודם.</p>'}</div>
+    <div class="panel"><h3>פוסטרים ותקצירים (רשות)</h3>
+      <p class="muted" style="margin-top:0">${st.tmdb ? '✓ פעיל.' : 'כדי לקבל פוסטרים ותקצירים בעברית, הירשם בחינם ל-<a class="link" href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">TMDB</a>, ואז ב-<a class="link" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">הגדרות ← API</a> העתק את ה-<b>API Key</b>.'}</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="input" id="tmdb-key" dir="ltr" autocomplete="off" placeholder="${st.tmdb ? 'להחלפה: הדבק מפתח חדש' : 'API Key'}" style="flex:1;min-width:180px">
+        <button class="btn" id="save-tmdb">שמור</button>
+      </div>
     </div>
-    <div class="panel"><h3>חשבון</h3><button class="btn danger" id="logout">התנתק מהאתר</button></div>`;
+    <div class="panel"><h3>סיסמת האתר</h3>
+      <div class="form-grid">
+        <input class="input" id="pw-cur" type="password" placeholder="סיסמה נוכחית">
+        <input class="input" id="pw-new" type="password" placeholder="סיסמה חדשה">
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="change-pw">שנה סיסמה</button>
+        <button class="btn danger" id="logout">יציאה מהאתר</button>
+      </div>
+    </div>`;
 
+  const $ = (sel) => $app.querySelector(sel);
+  const run = async (fn, errEl) => {
+    if (errEl) errEl.textContent = '';
+    try { await fn(); } catch (e) { if (errEl) errEl.textContent = e.message; else alert(e.message); }
+  };
+
+  // --- telegram connect flow
+  $('#save-api')?.addEventListener('click', () => run(async () => {
+    await api('/api/settings', {method: 'POST', body: {api_id: $('#api-id').value, api_hash: $('#api-hash').value.trim()}});
+    pageSettings();
+  }));
+  $('#reset-api')?.addEventListener('click', () => {
+    $('.panel').innerHTML = '<h3>חיבור לטלגרם</h3>' + telegramPanel({...st, telegram_configured: false});
+    $('#save-api').onclick = () => run(async () => {
+      await api('/api/settings', {method: 'POST', body: {api_id: $('#api-id').value, api_hash: $('#api-hash').value.trim()}});
+      pageSettings();
+    });
+  });
+  const tgErr = $('#tg-err');
+  const show = (step) => ['phone', 'code', 'pass'].forEach((s) => { const el = $(`#tg-step-${s}`); if (el) el.hidden = s !== step; });
+  const afterLogin = (r) => {
+    if (r.need_password) { show('pass'); $('#tg-pass').focus(); } else pageSettings();
+  };
+  $('#tg-send')?.addEventListener('click', () => run(async () => {
+    $('#tg-send').disabled = true;
+    try { await api('/api/tg/send-code', {method: 'POST', body: {phone: $('#tg-phone').value}}); } finally { $('#tg-send').disabled = false; }
+    show('code'); $('#tg-code').focus();
+  }, tgErr));
+  $('#tg-code-go')?.addEventListener('click', () => run(async () => {
+    afterLogin(await api('/api/tg/sign-in', {method: 'POST', body: {code: $('#tg-code').value}}));
+  }, tgErr));
+  $('#tg-pass-go')?.addEventListener('click', () => run(async () => {
+    afterLogin(await api('/api/tg/sign-in', {method: 'POST', body: {password: $('#tg-pass').value}}));
+  }, tgErr));
+  $('#tg-logout')?.addEventListener('click', () => confirm('להתנתק מחשבון הטלגרם? הספרייה ומעקב הצפייה יישמרו.') &&
+    run(async () => { await api('/api/tg/logout', {method: 'POST'}); pageSettings(); }));
+
+  // --- other settings
+  $('#save-tmdb').onclick = () => run(async () => {
+    await api('/api/settings', {method: 'POST', body: {tmdb_api_key: $('#tmdb-key').value.trim()}});
+    if (auth) await api('/api/scan', {method: 'POST', body: {}});
+    pageSettings();
+  });
+  $('#change-pw').onclick = () => run(async () => {
+    await api('/api/password', {method: 'POST', body: {current: $('#pw-cur').value, new: $('#pw-new').value}});
+    alert('הסיסמה שונתה');
+    $('#pw-cur').value = $('#pw-new').value = '';
+  });
+  $('#logout').onclick = async () => { await api('/api/logout', {method: 'POST'}); location.href = '/login'; };
+
+  if (!auth) return;
+
+  // --- scanning
   let poll = null;
   const renderScan = (s) => {
-    const el = $app.querySelector('#scan-status');
+    const el = $('#scan-status');
     if (!el) return;
     const when = s.last_finished ? new Date(s.last_finished * 1000).toLocaleString('he-IL') : 'עדיין לא';
     el.innerHTML = s.running
@@ -500,21 +605,19 @@ async function pageSettings() {
   renderScan(st.scan);
   if (st.scan.running) startPoll();
   cleanup = () => clearInterval(poll);
-
   const doScan = async (full) => {
     try { renderScan(await api('/api/scan', {method: 'POST', body: {full}})); startPoll(); } catch (e) { alert(e.message); }
   };
-  $app.querySelector('#scan').onclick = () => doScan(false);
-  $app.querySelector('#scan-full').onclick = () => confirm('לסרוק מחדש את כל ההודעות בכל הקבוצות? זה יכול לקחת זמן.') && doScan(true);
-  $app.querySelector('#logout').onclick = async () => { await api('/api/logout', {method: 'POST'}); location.href = '/login'; };
+  $('#scan').onclick = () => doScan(false);
+  $('#scan-full').onclick = () => confirm('לסרוק מחדש את כל ההודעות בכל הקבוצות? זה יכול לקחת זמן.') && doScan(true);
 
-  if (!st.telegram_authorized) return;
-  const box = $app.querySelector('#chats');
+  // --- chats
+  const box = $('#chats');
   try {
     const dialogs = await api('/api/dialogs');
     dialogs.sort((a, b) => (b.enabled - a.enabled) || a.title.localeCompare(b.title, 'he'));
     box.innerHTML = `
-      <input class="input" id="chat-filter" placeholder="סינון לפי שם..." style="width:100%">
+      <input class="input" id="chat-filter" placeholder="חיפוש קבוצה..." style="width:100%">
       <div class="chat-list">${dialogs.map((d) => `
         <label class="chat-item" data-name="${esc(d.title.toLowerCase())}">
           <input type="checkbox" data-id="${d.id}" data-title="${esc(d.title)}" ${d.enabled ? 'checked' : ''}>
@@ -530,7 +633,11 @@ async function pageSettings() {
       const chats = [...box.querySelectorAll('input[type=checkbox]')]
         .filter((c) => c.checked || dialogs.find((d) => String(d.id) === c.dataset.id)?.enabled)
         .map((c) => ({id: c.dataset.id, title: c.dataset.title, enabled: c.checked}));
-      try { await api('/api/chats', {method: 'POST', body: {chats}}); await doScan(false); } catch (e) { alert(e.message); }
+      try {
+        await api('/api/chats', {method: 'POST', body: {chats}});
+        await doScan(false);
+        $('#scan-status').scrollIntoView({behavior: 'smooth', block: 'center'});
+      } catch (e) { alert(e.message); }
     };
   } catch (e) {
     box.innerHTML = errorBox(e);

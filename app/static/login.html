@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e1015">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/static/icon-192.png">
   <title>כניסה · הספרייה שלי</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -10,22 +13,36 @@
   <div class="login-page">
     <form class="login-card" id="f">
       <div class="logo"><span class="dot"></span> הספרייה שלי</div>
+      <p class="muted" id="intro" style="text-align:center;margin-top:0"></p>
       <input class="input" type="password" id="pw" placeholder="סיסמה" autocomplete="current-password" autofocus>
-      <button class="btn primary" type="submit">כניסה</button>
+      <input class="input" type="password" id="pw2" placeholder="הקלד את הסיסמה שוב" autocomplete="new-password" hidden>
+      <button class="btn primary" type="submit" id="go">כניסה</button>
       <div class="err" id="err"></div>
     </form>
   </div>
   <script>
-    document.getElementById('f').addEventListener('submit', async (e) => {
+    let setupMode = false;
+    const $ = (id) => document.getElementById(id);
+    fetch('/api/setup-state').then((r) => r.json()).then((s) => {
+      setupMode = s.needs_setup;
+      if (setupMode) {
+        $('intro').textContent = 'ברוך הבא! בחר סיסמה לאתר. היא תישמר רק אצלך בטלפון.';
+        $('pw').placeholder = 'בחר סיסמה (לפחות 4 תווים)';
+        $('pw').autocomplete = 'new-password';
+        $('pw2').hidden = false;
+        $('go').textContent = 'שמור והמשך';
+      }
+    });
+    $('f').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const err = document.getElementById('err');
-      err.textContent = '';
-      const r = await fetch('/api/login', {
+      $('err').textContent = '';
+      if (setupMode && $('pw').value !== $('pw2').value) { $('err').textContent = 'הסיסמאות לא זהות'; return; }
+      const r = await fetch(setupMode ? '/api/setup' : '/api/login', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({password: document.getElementById('pw').value})
+        body: JSON.stringify({password: $('pw').value})
       });
-      if (r.ok) location.href = '/';
-      else err.textContent = (await r.json().catch(() => ({}))).detail || 'שגיאה';
+      if (r.ok) location.href = setupMode ? '/#/settings' : '/';
+      else $('err').textContent = (await r.json().catch(() => ({}))).detail || 'שגיאה';
     });
   </script>
 </body>

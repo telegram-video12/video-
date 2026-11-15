@@ -3,7 +3,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
@@ -36,7 +36,23 @@ class FakeTG:
     def __init__(self):
         self.messages = list(MESSAGES)
 
-    async def start(self): ...
+    async def start(self, api_id=None, api_hash=None):
+        self.started_with = (api_id, api_hash)
+
+    async def send_code(self, phone):
+        self.phone = phone
+
+    async def sign_in_code(self, code):
+        if code != "12345":
+            raise type("PhoneCodeInvalidError", (Exception,), {})()
+        return False  # needs 2FA
+
+    async def sign_in_password(self, password):
+        self.authorized = True
+
+    async def log_out(self):
+        self.authorized = False
+
     async def stop(self): ...
     async def me(self): return {"name": "Test", "username": "t"}
 
@@ -66,7 +82,7 @@ class FakeTG:
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SITE_PASSWORD", "secret")
+    monkeypatch.setenv("SITE_PASSWORD", "")
     monkeypatch.setenv("TMDB_API_KEY", "")
     monkeypatch.setenv("SCAN_INTERVAL_MINUTES", "0")
     monkeypatch.setenv("MIN_DURATION_SECONDS", "180")
@@ -76,6 +92,9 @@ def client(tmp_path, monkeypatch):
 
 
 def login(c):
+    if c.get("/api/setup-state").json()["needs_setup"]:
+        assert c.post("/api/setup", json={"password": "secret"}).status_code == 200
+        c.cookies.clear()
     assert c.post("/api/login", json={"password": "nope"}).status_code == 401
     assert c.post("/api/login", json={"password": "secret"}).status_code == 200
 
@@ -87,7 +106,41 @@ def scan(c):
     asyncio.run(c.app.state.scanner.scan())
 
 
+def test_setup_then_login(client):
+    assert client.get("/api/setup-state").json() == {"needs_setup": True}
+    assert client.get("/api/library").status_code == 401
+    assert client.post("/api/setup", json={"password": "ab"}).status_code == 400
+    assert client.post("/api/setup", json={"password": "secret"}).status_code == 200
+    assert client.get("/api/library").status_code == 200  # setup logs you in
+    assert client.post("/api/setup", json={"password": "other"}).status_code == 403
+    client.post("/api/password", json={"current": "secret", "new": "newpass"})
+    client.cookies.clear()
+    assert client.post("/api/login", json={"password": "secret"}).status_code == 401
+    assert client.post("/api/login", json={"password": "newpass"}).status_code == 200
+
+
+def test_telegram_web_login(client):
+    login(client)
+    tg = client.app.state.tg
+    tg.authorized = False
+    r = client.post("/api/settings", json={"api_id": "123", "api_hash": "xyz"})
+    assert r.status_code == 400
+    r = client.post("/api/settings", json={"api_id": "123", "api_hash": "a" * 32})
+    assert r.status_code == 200 and tg.started_with == (123, "a" * 32)
+    assert client.app.state.settings.api_id == 123
+    assert client.post("/api/tg/send-code", json={"phone": "050-123 4567"}).json()["phone"] == "+972501234567"
+    assert client.post("/api/tg/sign-in", json={"code": "11111"}).status_code == 400
+    assert client.post("/api/tg/sign-in", json={"code": "12345"}).json()["need_password"] is True
+    assert client.post("/api/tg/sign-in", json={"password": "pw"}).json()["done"] is True
+    assert client.get("/api/status").json()["telegram_authorized"] is True
+    # settings persisted to config.json
+    from app.config import Settings
+    assert Settings().api_hash == "a" * 32
+
+
 def test_requires_login(client):
+    login(client)
+    client.cookies.clear()
     assert client.get("/api/library").status_code == 401
     r = client.get("/", follow_redirects=False)
     assert r.status_code in (302, 307) and r.headers["location"] == "/login"

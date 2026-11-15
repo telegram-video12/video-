@@ -15,7 +15,7 @@ class FakeClient:
 
 
 def make():
-    svc = TelegramService(1, "x", "/tmp/unused")
+    svc = TelegramService("/tmp/unused", 1, "x")
     svc.client = FakeClient()
     svc.authorized = True
 
