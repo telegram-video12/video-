@@ -1,19 +1,39 @@
-"""Start the site:  python -m app   (on the phone, just type: tv)"""
+"""Start the site:  python -m app   (phone: type tv · Windows: the desktop icon)"""
 import os
 import shutil
+import socket
 import subprocess
 import threading
+import webbrowser
 
 import uvicorn
 
 from .main import create_app
 
+
+def lan_address() -> str | None:
+    """This device's address on the home Wi-Fi (for opening the site from another device)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))  # no packet is sent; picks the outgoing interface
+            ip = s.getsockname()[0]
+        return None if ip.startswith("127.") else ip
+    except OSError:
+        return None
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000") or 8000)
-    # 127.0.0.1 = reachable only from this phone. Set HOST=0.0.0.0 to allow other devices on the Wi-Fi.
+    # 127.0.0.1 = reachable only from this device. HOST=0.0.0.0 also lets other devices on the Wi-Fi in.
     host = os.getenv("HOST", "127.0.0.1")
     url = f"http://localhost:{port}"
-    print(f"\n  *** The site is running! Open in the browser: {url}\n  To stop: CTRL+C (or close Termux)\n")
-    if shutil.which("termux-open-url") and os.getenv("NO_BROWSER") != "1":
-        threading.Timer(2.5, lambda: subprocess.run(["termux-open-url", url], check=False)).start()
+    print(f"\n  *** The site is running! Open in the browser: {url}")
+    if host == "0.0.0.0" and lan_address():
+        print(f"  From your phone (same Wi-Fi): http://{lan_address()}:{port}")
+    print("  To stop: CTRL+C (or close this window)\n")
+    if os.getenv("NO_BROWSER") != "1":
+        if shutil.which("termux-open-url"):
+            threading.Timer(2.5, lambda: subprocess.run(["termux-open-url", url], check=False)).start()
+        elif os.name == "nt":
+            threading.Timer(2.5, lambda: webbrowser.open(url)).start()
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
