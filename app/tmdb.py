@@ -137,6 +137,7 @@ class TMDB:
                 en = await self._get(client, f"/{media_type}/{item['id']}", language="en-US")
                 overview = en.get("overview")
         date = item.get("first_air_date") or item.get("release_date") or ""
+        last = item.get("last_air_date") or date  # series: when the latest episode came out
         runtime = item.get("runtime") or next(iter(item.get("episode_run_time") or []), None)
         cast = [{"name": c.get("name"), "photo": IMG + "w185" + c["profile_path"] if c.get("profile_path") else None}
                 for c in ((item.get("credits") or {}).get("cast") or [])[:10] if c.get("name")]
@@ -149,6 +150,7 @@ class TMDB:
             "poster": IMG + "w342" + item["poster_path"] if item.get("poster_path") else None,
             "backdrop": IMG + "w1280" + item["backdrop_path"] if item.get("backdrop_path") else None,
             "year": int(date[:4]) if date[:4].isdigit() else None,
+            "last_year": int(last[:4]) if last[:4].isdigit() else None,
             "genres": [g["name"] for g in item.get("genres") or [] if g.get("name")],
             "rating": round(float(item["vote_average"]), 1) if item.get("vote_average") and votes >= 5 else None,
             "runtime": int(runtime) if runtime else None,
@@ -193,6 +195,7 @@ class TMDB:
             runtime=meta.get("runtime"),
             cast_json=json.dumps(meta.get("cast") or [], ensure_ascii=False),
             tmdb_details=1,
+            last_year=meta.get("last_year"),
         )
         # The same movie/series under another name (e.g. Hebrew vs English caption) -> one entry.
         # Always merge the newer entry into the older one so concurrent lookups agree.

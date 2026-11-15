@@ -49,3 +49,20 @@ def test_recently_added_means_added_to_the_library(client):
     asyncio.run(client.app.state.scanner.scan())
     first = client.get("/api/library?kind=series&limit=5").json()["titles"][0]
     assert first["name"] == "החיים זה לא הכל"
+
+
+def test_newest_rows_sort_by_release_year(client):
+    login(client)
+    db = client.app.state.db
+    for i, (name, kind, year, last) in enumerate([("ישן", "movie", 1990, None), ("חדש", "movie", 2025, None),
+                                                   ("בלי שנה", "movie", None, None),
+                                                   ("סדרה ותיקה", "series", 2005, 2025), ("סדרה", "series", 2020, 2021)]):
+        tid = db.get_or_create_title(kind, name, name.replace(" ", ""), year)
+        db.update_title(tid, last_year=last)
+        db.add_media(chat_id=-100, msg_id=500 + i, title_id=tid, season=1 if kind == "series" else None,
+                     episode=1 if kind == "series" else None, file_name="", caption="", size=1, mime="video/mp4",
+                     duration=3000, width=1, height=1, added_at=1000)
+    movies = [t["name"] for t in client.get("/api/library?kind=movie&sort=release").json()["titles"]]
+    series = [t["name"] for t in client.get("/api/library?kind=series&sort=release").json()["titles"]]
+    assert movies == ["חדש", "ישן"]                 # unknown year left out
+    assert series == ["סדרה ותיקה", "סדרה"]          # by the latest season (2025), not the first (2005)

@@ -251,6 +251,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             items = sorted(items, key=lambda t: (not re.match(r"[א-ת]", t["name"] or ""), (t["name"] or "").lower()))
         elif sort == "year":
             items = sorted(items, key=lambda t: t["year"] or 0, reverse=True)
+        elif sort == "release":  # newest first: a movie's year, a series' latest season; unknown years left out
+            items = sorted((t for t in items if t["year"]),
+                           key=lambda t: (t.get("last_year") or t["year"], t["year"]), reverse=True)
         elif sort == "rating":
             items = sorted(items, key=lambda t: t["rating"] or 0, reverse=True)
         counts = {"all": len(items), "series": sum(1 for t in items if t["kind"] == "series")}
@@ -848,9 +851,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         try:
             await asyncio.to_thread(migrate_norms, db)
             await asyncio.to_thread(repair, db)
-            from .library import merge_similar_movies, retry_unmatched
+            from .library import merge_similar_movies, refresh_series_years, retry_unmatched
 
             retry_unmatched(db)
+            refresh_series_years(db)
             await asyncio.to_thread(merge_similar_movies, db)
         except Exception as e:  # noqa: BLE001 - never take the site down for this; show it in Settings
             log.exception("library upkeep failed")

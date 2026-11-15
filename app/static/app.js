@@ -114,11 +114,13 @@ const n = (x) => Number(x || 0).toLocaleString('he-IL');
 async function pageHome() {
   const head = pageHeader('', '', {logo: true, dice: ''});
   if (!libraryCache) $app.innerHTML = head + skeletonRows();
-  const [all, series, movies, extra] = await Promise.all([
+  const [all, series, movies, extra, newMovies, newSeries] = await Promise.all([
     api('/api/library?limit=20'),
     api('/api/library?kind=series&limit=20&nocont=1'),
     api('/api/library?kind=movie&limit=20&nocont=1'),
     api('/api/home').catch(() => ({new: [], genres: [], watchlist: []})),
+    api('/api/library?kind=movie&sort=release&limit=20&nocont=1').catch(() => ({titles: []})),
+    api('/api/library?kind=series&sort=release&limit=20&nocont=1').catch(() => ({titles: []})),
   ]);
   libraryCache = all;
   if (!all.counts.all) { $app.innerHTML = head + emptyLibrary(); return; }
@@ -130,6 +132,8 @@ async function pageHome() {
     (cont.length ? rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`) : '') +
     (extra.new.length ? rowSection('✨ פרקים חדשים', '', posterRow(extra.new)) : '') +
     ((extra.watchlist || []).length ? rowSection('⭐ לצפות בהמשך', '#/mylist', posterRow(extra.watchlist)) : '') +
+    (newMovies.titles.length ? rowSection('🎬 סרטים חדשים', '', posterRow(newMovies.titles)) : '') +
+    (newSeries.titles.length ? rowSection('📺 סדרות חדשות', '', posterRow(newSeries.titles)) : '') +
     extra.genres.map((r) => rowSection(extra.personal ? `כי אתה אוהב ${r.genre}` : r.genre, '', posterRow(r.titles))).join('') +
     (series.titles.length ? rowSection('סדרות שנוספו לאחרונה', '#/series', `<div class="hrow">${series.titles.map(posterCard).join('')}</div>`) : '') +
     (movies.titles.length ? rowSection('סרטים שנוספו לאחרונה', '#/movies', `<div class="hrow">${movies.titles.map(posterCard).join('')}</div>`) : '');

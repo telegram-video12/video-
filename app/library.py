@@ -280,6 +280,14 @@ def _possible_duplicates(db: Database) -> list[dict]:
     return out
 
 
+def refresh_series_years(db: Database) -> None:
+    """Once: series already matched on TMDB fetch their details again to learn their latest season's year."""
+    if db.get_pref("series_last_year") == "1":
+        return
+    db.x("UPDATE titles SET tmdb_details = 0 WHERE kind = 'series' AND tmdb_id IS NOT NULL", soft=True)
+    db.set_pref("series_last_year", "1")
+
+
 def retry_unmatched(db: Database) -> None:
     """Once after the smarter TMDB search arrived: look again for titles TMDB did not find before."""
     if db.get_pref("tmdb_retry") == "smart1":
