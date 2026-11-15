@@ -1,0 +1,162 @@
+"""Guess series / season / episode / movie info from a Telegram caption or file name.
+
+Handles common English patterns (S01E02, 1x02, Season 1 Episode 2) and
+Hebrew ones ("עונה 1 פרק 2", "ע1 פ2", "פרק 5").
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+HEB_NUM = r"(\d{1,4})"
+
+# Each pattern must define named groups: season (optional) and episode.
+EPISODE_PATTERNS = [
+    re.compile(r"\bS(?P<season>\d{1,2})[\s._-]*E(?P<episode>\d{1,4})\b", re.I),
+    re.compile(r"\b(?P<season>\d{1,2})x(?P<episode>\d{1,3})\b", re.I),
+    re.compile(
+        r"\bseason[\s._-]*(?P<season>\d{1,2})[\s._,-]*(?:episode|ep)[\s._-]*(?P<episode>\d{1,4})\b", re.I
+    ),
+    re.compile(r"עונה[\s._:-]*(?P<season>\d{1,2})[\s._,:-]*(?:-|,)?[\s]*פרק[\s._:-]*(?P<episode>\d{1,4})"),
+    re.compile(r"(?<![א-ת])ע['׳\"]?[\s._-]*(?P<season>\d{1,2})[\s._,-]*פ['׳\"]?[\s._-]*(?P<episode>\d{1,4})"),
+    re.compile(r"פרק[\s._:-]*(?P<episode>\d{1,4})[\s._,:-]*עונה[\s._:-]*(?P<season>\d{1,2})"),
+    re.compile(r"\b(?:episode|ep)[\s._-]*(?P<episode>\d{1,4})\b", re.I),
+    re.compile(r"פרק[\s._:-]*(?P<episode>\d{1,4})"),
+    re.compile(r"\bE(?P<episode>\d{2,4})\b"),
+]
+
+SEASON_ONLY = [
+    re.compile(r"\bseason[\s._-]*(\d{1,2})\b", re.I),
+    re.compile(r"\bS(\d{1,2})\b"),
+    re.compile(r"עונה[\s._:-]*(\d{1,2})"),
+]
+
+YEAR_RE = re.compile(r"[\(\[\s._-]((?:19|20)\d{2})(?:[\)\]\s._-]|$)")
+
+JUNK_RE = re.compile(
+    r"\b(2160p|1080p|720p|576p|480p|360p|4k|uhd|hdr|web[-. ]?dl|webrip|web|bluray|blu-ray|brrip|bdrip|"
+    r"hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|avc|aac\d?(?:\.\d)?|ac3|dd5\.1|ddp?5\.1|10bit|"
+    r"proper|repack|extended|unrated|remastered|multi|dual|subs?|hebsub|heb|eng|nf|amzn|dsnp|hmax|atvp|"
+    r"מתורגם|תרגום|כתוביות|מדובב|באיכות|גבוהה|hd|sd|fhd|mkv|mp4|avi)\b",
+    re.I,
+)
+
+VIDEO_EXT_RE = re.compile(r"\.(mkv|mp4|avi|mov|m4v|webm|ts|wmv|flv)$", re.I)
+
+
+@dataclass
+class ParsedInfo:
+    name: str
+    kind: str  # "series" | "movie"
+    season: int | None = None
+    episode: int | None = None
+    year: int | None = None
+
+
+def clean_name(text: str) -> str:
+    text = VIDEO_EXT_RE.sub("", text)
+    text = text.replace("#", " ")
+    text = re.sub(r"@\w+", " ", text)  # channel mentions
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[\[\(\{][^\]\)\}]*[\]\)\}]", " ", text)  # bracketed tags
+    text = re.sub(r"[._]+", " ", text)
+    text = JUNK_RE.sub(" ", text)
+    text = re.sub(r"[^\w\s'׳\"&!?:-]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.strip(" -:|,–—")
+    return text
+
+
+def normalize(name: str) -> str:
+    """Key used to group episodes of the same title together."""
+    name = name.lower()
+    name = re.sub(r"['׳\"]", "", name)
+    name = re.sub(r"[^\w]+", " ", name)
+    name = re.sub(r"\bthe\b", " ", name)
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def _first_meaningful_line(caption: str) -> str:
+    for line in caption.splitlines():
+        if re.search(r"[\wא-ת]", line):
+            return line.strip()
+    return ""
+
+
+def _parse_one(text: str) -> ParsedInfo | None:
+    """Try to parse a single line of text. Returns None when nothing useful found."""
+    if not text:
+        return None
+    text = VIDEO_EXT_RE.sub("", text.strip())
+    text = re.sub(r"[._]+", " ", text)
+    for pattern in EPISODE_PATTERNS:
+        m = pattern.search(text)
+        if not m:
+            continue
+        groups = m.groupdict()
+        episode = int(groups["episode"])
+        season = int(groups["season"]) if groups.get("season") else None
+        if season is None:
+            for sp in SEASON_ONLY:
+                sm = sp.search(text)
+                if sm:
+                    season = int(sm.group(1))
+                    break
+        name_part = text[: m.start()]
+        # "Name - season 2" leftovers
+        for sp in SEASON_ONLY:
+            name_part = sp.sub(" ", name_part)
+        name = clean_name(name_part)
+        if not name:
+            # name may come after the episode marker ("פרק 3 - שם הסדרה")
+            name = clean_name(text[m.end():])
+            name = re.sub(r"^\d+\s*", "", name)
+        year = None
+        ym = YEAR_RE.search(" " + name_part + " ")
+        if ym:
+            year = int(ym.group(1))
+            name = clean_name(re.sub(rf"\b{year}\b", " ", name))
+        return ParsedInfo(name=name, kind="series", season=season or 1, episode=episode, year=year)
+
+    # No episode marker -> movie
+    year = None
+    name_text = text
+    ym = YEAR_RE.search(" " + text + " ")
+    if ym:
+        year = int(ym.group(1))
+        # Everything after the year is usually release junk
+        idx = text.find(ym.group(1))
+        name_text = text[:idx]
+    name = clean_name(name_text)
+    if not name:
+        return None
+    return ParsedInfo(name=name, kind="movie", year=year)
+
+
+def parse_media(caption: str | None, file_name: str | None, fallback_name: str = "") -> ParsedInfo:
+    caption = (caption or "").strip()
+    file_name = (file_name or "").strip()
+
+    candidates = []
+    if caption:
+        candidates.append(_parse_one(_first_meaningful_line(caption)))
+        candidates.append(_parse_one(caption.replace("\n", " ")))
+    if file_name:
+        candidates.append(_parse_one(file_name))
+    candidates = [c for c in candidates if c]
+
+    # Prefer anything that found an episode; then anything with a name.
+    best = next((c for c in candidates if c.kind == "series" and c.name), None)
+    if best is None:
+        series_no_name = next((c for c in candidates if c.kind == "series"), None)
+        if series_no_name:
+            named = next((c for c in candidates if c.name), None)
+            series_no_name.name = (named.name if named else "") or fallback_name
+            best = series_no_name
+    if best is None:
+        best = next((c for c in candidates if c.name), None)
+    if best is None:
+        best = ParsedInfo(name=fallback_name or "ללא שם", kind="movie")
+    if not best.name:
+        best.name = fallback_name or "ללא שם"
+    return best

@@ -1,0 +1,208 @@
+"""Telegram access via Telethon (MTProto): list groups, scan for videos, stream files in chunks."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass
+from typing import AsyncIterator
+
+from telethon import TelegramClient
+from telethon.errors import FileReferenceExpiredError
+
+log = logging.getLogger(__name__)
+
+CHUNK = 1024 * 1024  # Telegram serves files in 1 MiB-aligned parts
+MSG_CACHE_SECONDS = 20 * 60
+VIDEO_EXTS = (".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv", ".flv")
+
+
+@dataclass
+class VideoMessage:
+    chat_id: int
+    msg_id: int
+    caption: str
+    file_name: str
+    size: int
+    mime: str
+    duration: float | None
+    width: int | None
+    height: int | None
+    date: float
+
+
+def message_to_video(chat_id: int, msg) -> VideoMessage | None:
+    f = getattr(msg, "file", None)
+    if not f or not getattr(msg, "document", None):
+        return None
+    mime = (f.mime_type or "").lower()
+    name = f.name or ""
+    if not (mime.startswith("video/") or name.lower().endswith(VIDEO_EXTS)):
+        return None
+    if not mime.startswith("video/"):
+        mime = "video/x-matroska" if name.lower().endswith(".mkv") else "video/mp4"
+    return VideoMessage(
+        chat_id=chat_id,
+        msg_id=msg.id,
+        caption=msg.message or "",
+        file_name=name,
+        size=f.size or 0,
+        mime=mime,
+        duration=getattr(f, "duration", None),
+        width=getattr(f, "width", None),
+        height=getattr(f, "height", None),
+        date=msg.date.timestamp() if msg.date else time.time(),
+    )
+
+
+class TelegramService:
+    def __init__(self, api_id: int, api_hash: str, session_path: str):
+        self.configured = bool(api_id and api_hash)
+        self.client = TelegramClient(session_path, api_id, api_hash) if self.configured else None
+        self._msg_cache: dict[tuple[int, int], tuple[float, object]] = {}
+        self.authorized = False
+
+    async def start(self) -> None:
+        if not self.client:
+            log.warning("Telegram API credentials missing (TG_API_ID / TG_API_HASH)")
+            return
+        await self.client.connect()
+        self.authorized = await self.client.is_user_authorized()
+        if not self.authorized:
+            log.warning("Telegram session not logged in. Run: python -m app.login")
+
+    async def stop(self) -> None:
+        if self.client:
+            await self.client.disconnect()
+
+    def _require(self) -> TelegramClient:
+        if not self.client or not self.authorized:
+            raise RuntimeError("Telegram is not connected / logged in")
+        return self.client
+
+    async def me(self) -> dict | None:
+        if not self.authorized:
+            return None
+        u = await self.client.get_me()
+        return {"name": " ".join(filter(None, [u.first_name, u.last_name])), "username": u.username}
+
+    async def list_dialogs(self) -> list[dict]:
+        client = self._require()
+        out = []
+        async for d in client.iter_dialogs():
+            if d.is_group or d.is_channel:
+                out.append({"id": d.id, "title": d.name or str(d.id), "type": "channel" if d.is_channel and not d.is_group else "group"})
+        return out
+
+    async def _entity(self, chat_id: int):
+        client = self._require()
+        try:
+            return await client.get_input_entity(chat_id)
+        except ValueError:
+            # Entity not in the session cache yet: loading dialogs fills it.
+            await client.get_dialogs()
+            return await client.get_input_entity(chat_id)
+
+    async def iter_messages(self, chat_id: int, min_id: int = 0) -> AsyncIterator[tuple[int, VideoMessage | None]]:
+        """Yield (message id, video or None) for every message newer than min_id, oldest first."""
+        client = self._require()
+        entity = await self._entity(chat_id)
+        async for msg in client.iter_messages(entity, min_id=min_id, reverse=True):
+            v = message_to_video(chat_id, msg)
+            if v:
+                self._msg_cache[(chat_id, msg.id)] = (time.time(), msg)
+            yield msg.id, v
+
+    async def get_message(self, chat_id: int, msg_id: int, fresh: bool = False):
+        key = (chat_id, msg_id)
+        cached = self._msg_cache.get(key)
+        if cached and not fresh and time.time() - cached[0] < MSG_CACHE_SECONDS:
+            return cached[1]
+        client = self._require()
+        msg = await client.get_messages(await self._entity(chat_id), ids=msg_id)
+        if msg is None:
+            raise FileNotFoundError("message was deleted from Telegram")
+        self._msg_cache[key] = (time.time(), msg)
+        return msg
+
+    async def stream(self, chat_id: int, msg_id: int, start: int, end: int) -> AsyncIterator[bytes]:
+        """Yield bytes [start, end] (inclusive) of the file attached to the message."""
+        client = self._require()
+        aligned = start - (start % CHUNK)
+        skip = start - aligned
+        remaining = end - start + 1
+        msg = await self.get_message(chat_id, msg_id)
+        for attempt in range(2):
+            try:
+                async for chunk in client.iter_download(msg.media, offset=aligned, request_size=CHUNK):
+                    if skip:
+                        chunk = chunk[skip:]
+                        skip = 0
+                    if len(chunk) >= remaining:
+                        yield bytes(chunk[:remaining])
+                        return
+                    remaining -= len(chunk)
+                    aligned += CHUNK
+                    yield bytes(chunk)
+                return
+            except FileReferenceExpiredError:
+                if attempt:
+                    raise
+                msg = await self.get_message(chat_id, msg_id, fresh=True)
+
+    async def thumbnail(self, chat_id: int, msg_id: int) -> bytes | None:
+        client = self._require()
+        msg = await self.get_message(chat_id, msg_id)
+        try:
+            data = await client.download_media(msg, file=bytes, thumb=-1)
+        except (TypeError, ValueError, IndexError):
+            return None
+        return data or None
+
+
+class Scanner:
+    """Walks enabled chats and adds new videos to the library."""
+
+    def __init__(self, db, tg: TelegramService, tmdb, min_duration: int):
+        from .library import add_video  # local import to avoid a cycle
+
+        self._add_video = add_video
+        self.db = db
+        self.tg = tg
+        self.tmdb = tmdb
+        self.min_duration = min_duration
+        self.running = False
+        self.status: dict = {"running": False, "chat": None, "added": 0, "last_finished": None, "error": None}
+        self._lock = asyncio.Lock()
+
+    async def scan(self, chat_ids: list[int] | None = None) -> dict:
+        if self._lock.locked():
+            return self.status
+        async with self._lock:
+            self.status = {"running": True, "chat": None, "added": 0, "last_finished": self.status.get("last_finished"), "error": None}
+            try:
+                for chat in self.db.chats(enabled_only=True):
+                    if chat_ids and chat["id"] not in chat_ids:
+                        continue
+                    self.status["chat"] = chat["title"]
+                    last_seen = chat["last_msg_id"]
+                    count = 0
+                    async for msg_id, v in self.tg.iter_messages(chat["id"], min_id=chat["last_msg_id"]):
+                        count += 1
+                        last_seen = max(last_seen, msg_id)
+                        if v is not None and self._add_video(self.db, v, chat["title"], self.min_duration):
+                            self.status["added"] += 1
+                        if count % 200 == 0:
+                            self.db.set_chat_scanned(chat["id"], last_seen)
+                    self.db.set_chat_scanned(chat["id"], last_seen)
+                if self.tmdb:
+                    self.status["chat"] = "TMDB"
+                    await self.tmdb.enrich_pending(self.db)
+            except Exception as e:  # noqa: BLE001 - surface any error in the UI
+                log.exception("scan failed")
+                self.status["error"] = str(e)
+            finally:
+                self.status["running"] = False
+                self.status["chat"] = None
+                self.status["last_finished"] = time.time()
+            return self.status
