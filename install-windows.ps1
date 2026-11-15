@@ -9,15 +9,38 @@ $Zip    = "https://github.com/telegram-video12/video-/archive/refs/heads/$Branch
 function Say($t) { Write-Host "`n==> $t" -ForegroundColor Yellow }
 
 # 1. Python
-Say "Step 1/4: Python"
-$py = Get-Command python -ErrorAction SilentlyContinue
-if ($py -and ((& python --version 2>&1) -match "Python 3\.(1[0-9])")) {
-    Write-Host "Python found: $(& python --version 2>&1)"
-} else {
-    Write-Host "Installing Python 3.12 (a window may ask for permission)..."
-    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
-    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+# Note: Windows ships a fake "python" (Microsoft Store shortcut) that only prints an error,
+# so we look for a real installation and use its full path everywhere.
+function Find-Python {
+    $cands = @()
+    $cands += Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" -ErrorAction SilentlyContinue
+    $cands += Get-ChildItem "$env:ProgramFiles\Python3*\python.exe" -ErrorAction SilentlyContinue
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source -notlike "*WindowsApps*") { $cands += Get-Item $cmd.Source }
+    foreach ($c in ($cands | Sort-Object FullName -Descending)) {
+        $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        $v = & $c.FullName --version 2>&1 | Out-String
+        $ErrorActionPreference = $old
+        if ($v -match "Python 3\.(1[0-9])") { return $c.FullName }
+    }
+    return $null
 }
+
+Say "Step 1/4: Python"
+$Python = Find-Python
+if (-not $Python) {
+    Write-Host "Installing Python 3.12 (a window may ask for permission - click Yes)..."
+    $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    winget install -e --id Python.Python.3.12 --scope user --accept-package-agreements --accept-source-agreements
+    $ErrorActionPreference = $old
+    $Python = Find-Python
+}
+if (-not $Python) {
+    Write-Host "`nPython was not found. Install it from https://www.python.org/downloads/" -ForegroundColor Red
+    Write-Host "(tick 'Add python.exe to PATH'), then run this command again." -ForegroundColor Red
+    return
+}
+Write-Host "Using Python: $Python"
 
 # 2. Download the site (data folder is never touched)
 Say "Step 2/4: Downloading the site"
@@ -34,8 +57,11 @@ Remove-Item $tmp -Recurse -Force
 
 # 3. Components
 Say "Step 3/4: Installing components"
-& python -m pip install --upgrade pip --quiet
-& python -m pip install -r (Join-Path $Dir "requirements.txt") --quiet
+$old = $ErrorActionPreference; $ErrorActionPreference = "Continue"   # pip prints notices on stderr
+& $Python -m pip install --upgrade pip --quiet 2>&1 | Out-Null
+& $Python -m pip install -r (Join-Path $Dir "requirements.txt") --quiet
+$ErrorActionPreference = $old
+if ($LASTEXITCODE -ne 0) { Write-Host "Installing components failed (see above)." -ForegroundColor Red; return }
 
 # 4. Desktop shortcuts
 Say "Step 4/4: Desktop shortcuts"
@@ -45,7 +71,7 @@ Set-Content -Path $start -Encoding ASCII -Value @"
 title My Library
 cd /d "%~dp0"
 set HOST=0.0.0.0
-python -m app
+"$Python" -m app
 pause
 "@
 $update = Join-Path $Dir "update-windows.bat"
