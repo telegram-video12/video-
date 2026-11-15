@@ -106,7 +106,8 @@ class Database:
             self.conn.executemany("UPDATE titles SET name_key = ? WHERE id = ?",
                                   [(normalize(r[1] or ""), r[0]) for r in rows])
         for col, typ in (("genres", "TEXT"), ("rating", "REAL"), ("runtime", "INTEGER"), ("cast_json", "TEXT"),
-                         ("original_name", "TEXT"), ("tmdb_details", "INTEGER NOT NULL DEFAULT 0")):
+                         ("original_name", "TEXT"), ("tmdb_details", "INTEGER NOT NULL DEFAULT 0"),
+                         ("intro_start", "REAL"), ("intro_end", "REAL")):  # where the opening song is (per series)
             if col not in tcols:  # TMDB details (genres, rating, length, cast)
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
@@ -258,7 +259,8 @@ class Database:
 
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked",
-                   "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details"}
+                   "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details",
+                   "intro_start", "intro_end"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return

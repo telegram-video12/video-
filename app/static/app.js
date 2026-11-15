@@ -737,27 +737,51 @@ async function pageWatch(id) {
   const {media: m, title: t, prev, next, versions} = await api(`/api/media/${id}`);
   const isSeries = t.kind === 'series' && m.episode != null;
   document.title = `${t.name}${isSeries ? ' · ' + epLabel(m) : ''}`;
+  const sub = isSeries ? epLong(m) + (firstLine(m.caption) ? ' · ' + firstLine(m.caption) : '') : '';
 
   $app.innerHTML = `<div class="watch-layout"><div class="watch">
-    <div class="player-wrap" id="pw">
-      <video id="v" controls playsinline preload="metadata" src="/api/stream/${m.id}"></video>
+    <div class="player-wrap show-ui paused" id="pw">
+      <video id="v" playsinline preload="metadata" src="/api/stream/${m.id}"></video>
+      <div class="pl-spin"><div class="spinner"></div></div>
+      <div class="pl-flash" id="flash"></div>
+      <button class="pl-big" data-a="play" aria-label="נגן">▶</button>
+      <div class="pl-top">
+        <button class="pl-btn" data-a="back" aria-label="חזרה">→</button>
+        <div class="pl-name"><b>${esc(t.name)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</div>
+      </div>
+      <button class="pl-pill pl-skip" id="skip" hidden>⏭ דלג על הפתיחה</button>
+      ${next ? `<a class="pl-pill pl-next" id="nextpill" href="#/watch/${next.id}" hidden>הפרק הבא · ${esc(epLabel(next))} ⏭</a>` : ''}
+      <div class="pl-bar">
+        <div class="pl-seek" id="seek"><div class="pl-track"><i class="pl-buf"></i><i class="pl-played"></i></div><i class="pl-knob"></i><span class="pl-tip"></span></div>
+        <div class="pl-row">
+          <button class="pl-btn" data-a="play" id="playbtn" aria-label="נגן/עצור">▶</button>
+          <button class="pl-btn" data-a="back10" aria-label="10 שניות אחורה">⟲</button>
+          <button class="pl-btn" data-a="fwd10" aria-label="10 שניות קדימה">⟳</button>
+          ${next ? '<button class="pl-btn" data-a="next" aria-label="הפרק הבא">⏭</button>' : ''}
+          <div class="pl-vol"><button class="pl-btn" data-a="mute" id="mutebtn" aria-label="השתק">🔊</button><input type="range" id="vol" min="0" max="1" step="0.05"></div>
+          <span class="pl-time" id="time">0:00 / 0:00</span>
+          <span class="sp"></span>
+          <button class="pl-btn pl-txt" data-a="sleep" id="sleepbtn" title="שעון שינה">🌙</button>
+          <button class="pl-btn pl-txt" data-a="speed" id="speedbtn" title="מהירות">1x</button>
+          ${isSeries ? '<button class="pl-btn" data-a="intro" title="הגדרת הפתיחה של הסדרה">⚙</button>' : ''}
+          <button class="pl-btn" data-a="fs" aria-label="מסך מלא">⛶</button>
+        </div>
+      </div>
     </div>
     <div class="watch-head">
       <div>
         <h1><a href="#/title/${t.id}">${esc(t.name)}</a></h1>
-        <div class="muted">${esc(isSeries ? epLong(m) : '')} ${esc(firstLine(m.caption) && isSeries ? '· ' + firstLine(m.caption) : '')}</div>
+        <div class="muted">${esc(sub)}</div>
       </div>
       <div class="watch-controls">
         ${prev ? `<a class="btn" href="#/watch/${prev.id}" title="פרק קודם">→ ${esc(epLabel(prev) || 'הקודם')}</a>` : ''}
-        <button class="btn" id="back10" title="10 שניות אחורה">⟲ 10 שנ׳</button>
-        <button class="btn" id="fwd10" title="10 שניות קדימה">10 שנ׳ ⟳</button>
         ${next ? `<a class="btn primary" href="#/watch/${next.id}" title="הפרק הבא (N)">${esc(epLabel(next) || 'הבא')} ←</a>` : ''}
       </div>
     </div>
     ${versions && versions.length > 1 ? `<div class="versions"><span class="muted">איכות:</span>
       ${versions.map((x) => `<a class="tab ${x.id === m.id ? 'active' : ''}" href="#/watch/${x.id}">${x.quality ? x.quality + 'p' : '?'} · ${fmtSize(x.size)}</a>`).join('')}
     </div>` : ''}
-    <p class="muted" style="font-size:13px">קיצורי מקלדת: רווח = עצור/נגן · חיצים = 10 שניות · F = מסך מלא · N = הפרק הבא</p>
+    <p class="muted kbd-help">קיצורי מקלדת: רווח = עצור/נגן · חיצים = 10 שניות · ↑↓ = עוצמה · M = השתק · F = מסך מלא · S = דלג על הפתיחה · N = הפרק הבא</p>
   </div>${isSeries ? '<aside class="watch-side" id="wside"></aside>' : ''}</div>`;
   if (isSeries) {  // computer: the season's episodes next to the player
     api(`/api/titles/${t.id}`).then(({media}) => {
@@ -774,8 +798,11 @@ async function pageWatch(id) {
 
   const v = $app.querySelector('#v');
   const wrap = $app.querySelector('#pw');
-  let lastSaved = -1, timer = null, nextTimer = null, finished = false;
+  const q = (s) => wrap.querySelector(s);
+  let lastSaved = -1, timer = null, nextTimer = null, finished = false, hideTimer = null, tick = null;
+  let introDone = false, genericSkipUsed = false;
 
+  // ---- saving progress
   const payload = () => ({position: v.currentTime || 0, duration: isFinite(v.duration) ? v.duration : null});
   const save = (force) => {
     if (!v.currentTime || (!force && Math.abs(v.currentTime - lastSaved) < 3)) return;
@@ -787,27 +814,201 @@ async function pageWatch(id) {
     navigator.sendBeacon(`/api/progress/${m.id}`, new Blob([JSON.stringify(payload())], {type: 'application/json'}));
   };
 
-  // resume where we stopped
+  // ---- small helpers
+  const toast = (html, ms = 5000) => {
+    wrap.querySelectorAll('.toast').forEach((x) => x.remove());
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.innerHTML = html;
+    wrap.appendChild(el);
+    if (ms) setTimeout(() => el.remove(), ms);
+    return el;
+  };
+  const flash = (text) => {  // the big "+10" / "⏸" bubble in the middle
+    const f = q('#flash');
+    f.textContent = text;
+    f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+  };
+  const seek = (sec) => {
+    if (!isFinite(v.duration)) return;
+    v.currentTime = Math.max(0, Math.min(v.duration - 0.5, sec));
+  };
+  const togglePlay = () => { if (v.paused) v.play().catch(() => {}); else v.pause(); };
+
+  // ---- show / hide the controls
+  const showUI = () => {
+    wrap.classList.add('show-ui');
+    clearTimeout(hideTimer);
+    if (!v.paused) hideTimer = setTimeout(() => wrap.classList.remove('show-ui'), 3000);
+  };
+  wrap.addEventListener('mousemove', showUI);
+  wrap.addEventListener('mouseleave', () => { if (!v.paused) wrap.classList.remove('show-ui'); });
+
+  // tap/click on the picture: computer = play/pause, phone = show controls; double = ±10 s (sides) or full screen
+  let lastTap = 0, tapTimer = null;
+  v.addEventListener('pointerup', (e) => {
+    const touch = e.pointerType !== 'mouse';
+    const now = Date.now();
+    const r = v.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    if (now - lastTap < 300) {  // double tap / double click
+      clearTimeout(tapTimer);
+      lastTap = 0;
+      if (touch && x < 0.35) { seek(v.currentTime - 10); flash('⟲ 10'); }
+      else if (touch && x > 0.65) { seek(v.currentTime + 10); flash('10 ⟳'); }
+      else toggleFs();
+      return;
+    }
+    lastTap = now;
+    tapTimer = setTimeout(() => {
+      if (touch) { if (wrap.classList.contains('show-ui') && !v.paused) wrap.classList.remove('show-ui'); else showUI(); }
+      else { togglePlay(); flash(v.paused ? '⏸' : '▶'); }
+    }, touch ? 250 : 200);
+  });
+
+  // ---- full screen: the whole page goes full screen, so moving to the next episode stays full screen
+  const toggleFs = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else {
+      const el = document.documentElement;
+      (el.requestFullscreen ? el.requestFullscreen() : Promise.reject()).then(() => {
+        screen.orientation?.lock?.('landscape').catch(() => {});
+      }).catch(() => v.webkitEnterFullscreen?.());
+    }
+  };
+
+  // ---- volume & speed (remembered)
+  const volEl = q('#vol');
+  v.volume = +store.get('player:vol', 1);
+  v.muted = !!store.get('player:muted', false);
+  v.playbackRate = +(sessionStorage.getItem('player:rate') || 1);
+  const drawVol = () => {
+    volEl.value = v.muted ? 0 : v.volume;
+    q('#mutebtn').textContent = v.muted || v.volume === 0 ? '🔇' : v.volume < 0.5 ? '🔉' : '🔊';
+    volEl.style.setProperty('--p', `${(v.muted ? 0 : v.volume) * 100}%`);
+  };
+  v.addEventListener('volumechange', () => { drawVol(); store.set('player:vol', v.volume); store.set('player:muted', v.muted); });
+  volEl.addEventListener('input', () => { v.volume = +volEl.value; v.muted = v.volume === 0; });
+  drawVol();
+  const drawRate = () => { q('#speedbtn').textContent = `${v.playbackRate}x`; };
+  v.addEventListener('ratechange', () => { sessionStorage.setItem('player:rate', v.playbackRate); drawRate(); });
+  drawRate();
+
+  // ---- the time line
+  const seekEl = q('#seek');
+  let dragging = false;
+  const ratioAt = (e) => { const r = seekEl.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); };
+  const drawTime = (cur = v.currentTime) => {
+    const d = isFinite(v.duration) ? v.duration : (m.duration || 0);
+    const p = d ? (cur / d) * 100 : 0;
+    seekEl.style.setProperty('--p', `${p}%`);
+    q('#time').textContent = `${fmtTime(cur)} / ${fmtTime(d)}`;
+    if (v.buffered.length && d) {
+      let end = 0;
+      for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= cur + 1) end = Math.max(end, v.buffered.end(i));
+      seekEl.style.setProperty('--b', `${(end / d) * 100}%`);
+    }
+  };
+  seekEl.addEventListener('pointerdown', (e) => {
+    dragging = true; seekEl.setPointerCapture(e.pointerId); seekEl.classList.add('drag');
+    drawTime(ratioAt(e) * (v.duration || 0));
+  });
+  seekEl.addEventListener('pointermove', (e) => {
+    const d = v.duration || 0;
+    const tip = q('.pl-tip');
+    tip.textContent = fmtTime(ratioAt(e) * d);
+    tip.style.left = `${ratioAt(e) * 100}%`;
+    if (dragging) { drawTime(ratioAt(e) * d); showUI(); }
+  });
+  seekEl.addEventListener('pointerup', (e) => {
+    if (!dragging) return;
+    dragging = false; seekEl.classList.remove('drag');
+    seek(ratioAt(e) * (v.duration || 0));
+  });
+
+  // ---- skip the opening (per series: set once with ⚙, or a quick 85-second jump)
+  const hasIntro = () => t.intro_end != null;
+  const inIntro = (ct) => hasIntro() && ct >= (t.intro_start || 0) && ct < t.intro_end - 1;
+  const skipIntro = () => {
+    const from = v.currentTime;
+    if (hasIntro()) { seek(t.intro_end); introDone = true; }
+    else { seek(from + 85); genericSkipUsed = true; }
+    const el = toast(`דילגתי על הפתיחה <button class="btn small">↶ בטל</button>`);
+    el.querySelector('button').onclick = () => { seek(from); el.remove(); };
+  };
+  q('#skip').onclick = (e) => { e.stopPropagation(); skipIntro(); };
+  const autoSkip = () => !!store.get(`intro-auto:${t.id}`, false);
+
+  // ---- sleep timer (keeps counting across episodes)
+  const sleep = () => { try { return JSON.parse(sessionStorage.getItem('player:sleep') || 'null'); } catch (_) { return null; } };
+  const setSleep = (s) => { if (s) sessionStorage.setItem('player:sleep', JSON.stringify(s)); else sessionStorage.removeItem('player:sleep'); drawSleep(); };
+  const drawSleep = () => {
+    const s = sleep(), b = q('#sleepbtn');
+    b.classList.toggle('on', !!s);
+    b.textContent = !s ? '🌙' : s.ep ? '🌙 סוף פרק' : `🌙 ${Math.max(1, Math.ceil((s.until - Date.now()) / 60000))} ד׳`;
+  };
+  const sleepNow = () => {
+    setSleep(null);
+    const vol = v.volume;
+    let i = 0;
+    const fade = setInterval(() => {  // fade out gently instead of a sudden stop
+      i += 1;
+      v.volume = Math.max(0, vol * (1 - i / 16));
+      if (i >= 16) {
+        clearInterval(fade);
+        v.pause();
+        v.volume = vol;
+        const o = document.createElement('div');
+        o.className = 'overlay';
+        o.innerHTML = `<div class="box"><div style="font-size:40px">💤</div><h2>לילה טוב</h2>
+          <p class="muted">שעון השינה עצר את הצפייה. המקום נשמר.</p><button class="btn primary">המשך לצפות</button></div>`;
+        o.querySelector('button').onclick = () => { o.remove(); v.play(); };
+        wrap.appendChild(o);
+      }
+    }, 500);
+  };
+  drawSleep();
+
+  // ---- every second: the time line, skip button, next-episode button, sleep timer
+  tick = setInterval(() => {
+    if (!dragging) drawTime();
+    const ct = v.currentTime, d = v.duration;
+    const showSkip = isSeries && !v.paused && (hasIntro() ? inIntro(ct) && !introDone : !genericSkipUsed && ct > 3 && ct < 240);
+    if (isSeries && hasIntro() && inIntro(ct) && !introDone && autoSkip() && !v.paused) skipIntro();
+    q('#skip').hidden = !showSkip;
+    const np = q('#nextpill');
+    if (np) np.hidden = !(isFinite(d) && d - ct < 30 && d > 120 && !(sleep() || {}).ep);
+    const s = sleep();
+    if (s && s.until) { drawSleep(); if (Date.now() >= s.until && !v.paused) sleepNow(); }
+  }, 500);
+
+  // ---- resume where we stopped
   v.addEventListener('loadedmetadata', () => {
     const pos = m.position || 0;
     if (!m.completed && pos > 10 && pos < v.duration - 20) {
       v.currentTime = pos;
-      const toast = document.createElement('div');
-      toast.className = 'toast';
-      toast.innerHTML = `ממשיך מ-${fmtTime(pos)} <button class="btn small" id="restart">מההתחלה</button>`;
-      wrap.appendChild(toast);
-      toast.querySelector('#restart').onclick = () => { v.currentTime = 0; toast.remove(); v.play(); };
-      setTimeout(() => toast.remove(), 8000);
+      const el = toast(`ממשיך מ-${fmtTime(pos)} <button class="btn small">מההתחלה</button>`, 8000);
+      el.querySelector('button').onclick = () => { v.currentTime = 0; el.remove(); v.play(); };
     }
+    drawTime();
     v.play().catch(() => {});
   }, {once: true});
 
-  v.addEventListener('play', () => { timer = timer || setInterval(() => save(false), 10000); });
-  v.addEventListener('pause', () => save(true));
-  v.addEventListener('seeked', () => save(true));
+  const drawPlay = () => {
+    wrap.classList.toggle('paused', v.paused);
+    q('#playbtn').textContent = v.paused ? '▶' : '⏸';
+    if (v.paused) { wrap.classList.add('show-ui'); clearTimeout(hideTimer); } else showUI();
+  };
+  v.addEventListener('play', () => { drawPlay(); timer = timer || setInterval(() => save(false), 10000); });
+  v.addEventListener('pause', () => { drawPlay(); save(true); });
+  v.addEventListener('waiting', () => wrap.classList.add('loading'));
+  ['playing', 'canplay', 'seeked'].forEach((ev) => v.addEventListener(ev, () => wrap.classList.remove('loading')));
+  v.addEventListener('seeked', () => { save(true); if (!inIntro(v.currentTime)) introDone = false; });
+  v.addEventListener('progress', () => drawTime());
   v.addEventListener('ended', () => {
     finished = true;
     api(`/api/progress/${m.id}`, {method: 'POST', body: {position: v.duration, duration: v.duration}}).catch(() => {});
+    if ((sleep() || {}).ep) { sleepNow(); return; }
     if (next) showNextOverlay();
   });
   v.addEventListener('error', () => {
@@ -824,10 +1025,10 @@ async function pageWatch(id) {
   function showNextOverlay() {
     let n = 10;
     const o = document.createElement('div');
-    o.className = 'overlay';
-    o.innerHTML = `<div class="box"><div class="muted">הפרק הבא</div><h2>${esc(epLong(next))}</h2>
-      <div class="count" id="cd">${n}</div>
-      <div style="display:flex;gap:8px;justify-content:center">
+    o.className = 'overlay next-overlay';
+    o.innerHTML = `<div class="box"><div class="muted">הפרק הבא מתחיל בעוד</div>
+      <div class="count" id="cd">${n}</div><h2>${esc(epLong(next))}</h2>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:12px">
         <a class="btn primary" href="#/watch/${next.id}">▶ נגן עכשיו</a>
         <button class="btn" id="cancel-next">ביטול</button></div></div>`;
     wrap.appendChild(o);
@@ -840,35 +1041,103 @@ async function pageWatch(id) {
     }, 1000);
   }
 
-  $app.querySelector('#back10').onclick = () => { v.currentTime = Math.max(0, v.currentTime - 10); };
-  $app.querySelector('#fwd10').onclick = () => { v.currentTime += 10; };
+  // ---- buttons
+  const actions = {
+    play: () => togglePlay(),
+    back: () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); location.hash = `#/title/${t.id}`; },
+    back10: () => { seek(v.currentTime - 10); flash('⟲ 10'); },
+    fwd10: () => { seek(v.currentTime + 10); flash('10 ⟳'); },
+    next: () => { location.hash = `#/watch/${next.id}`; },
+    mute: () => { v.muted = !v.muted; if (!v.muted && v.volume === 0) v.volume = 0.5; },
+    fs: () => toggleFs(),
+    speed: async () => {
+      const r = await bottomSheet('מהירות ניגון', [0.5, 0.75, 1, 1.25, 1.5, 2].map((x) => [String(x), x === 1 ? 'רגיל' : `${x}x`]), String(v.playbackRate));
+      if (r) v.playbackRate = +r;
+    },
+    sleep: async () => {
+      const s = sleep();
+      const r = await bottomSheet('🌙 שעון שינה', [['off', 'כבוי'], ['15', '15 דקות'], ['30', '30 דקות'], ['45', '45 דקות'], ['60', 'שעה'], ['90', 'שעה וחצי'], ['ep', 'בסוף הפרק הזה']],
+        !s ? 'off' : s.ep ? 'ep' : '');
+      if (!r) return;
+      setSleep(r === 'off' ? null : r === 'ep' ? {ep: true} : {until: Date.now() + (+r) * 60000});
+      if (r !== 'off') toast(r === 'ep' ? '🌙 הצפייה תיעצר בסוף הפרק' : `🌙 הצפייה תיעצר בעוד ${r} דקות`, 3000);
+    },
+    intro: async () => {
+      const ct = v.currentTime;
+      const cur = hasIntro() ? `${fmtTime(t.intro_start || 0)}–${fmtTime(t.intro_end)}` : 'עוד לא הוגדרה';
+      const r = await bottomSheet(`הפתיחה של ${t.name} · ${cur}`, [
+        ['start', `▶ הפתיחה מתחילה כאן (${fmtTime(ct)})`],
+        ['end', `⏹ הפתיחה נגמרת כאן (${fmtTime(ct)})`],
+        ['auto', autoSkip() ? 'דילוג אוטומטי: פועל ✓ (לחץ לכיבוי)' : 'דילוג אוטומטי: כבוי (לחץ להפעלה)'],
+        ...(hasIntro() ? [['clear', '🗑 מחק את הגדרת הפתיחה']] : []),
+      ]);
+      if (!r) return;
+      if (r === 'auto') { store.set(`intro-auto:${t.id}`, !autoSkip()); toast(autoSkip() ? 'הפתיחה תדולג אוטומטית בכל הפרקים' : 'דילוג אוטומטי כבוי', 3000); return; }
+      let body;
+      if (r === 'clear') body = {intro_start: null, intro_end: null};
+      else if (r === 'start') body = {intro_start: ct, intro_end: t.intro_end != null && t.intro_end > ct ? t.intro_end : Math.min(ct + 90, (v.duration || ct + 90))};
+      else body = {intro_start: t.intro_start != null && t.intro_start < ct ? t.intro_start : Math.max(0, Math.min(t.intro_start ?? 0, ct - 1)), intro_end: ct};
+      try {
+        await api(`/api/titles/${t.id}`, {method: 'PATCH', body});
+        Object.assign(t, body);
+        introDone = false;
+        toast(r === 'clear' ? 'הגדרת הפתיחה נמחקה' : `נשמר לכל הפרקים: הפתיחה ${fmtTime(t.intro_start || 0)}–${fmtTime(t.intro_end)}`, 4000);
+      } catch (e) { alert(e.message); }
+    },
+  };
+  wrap.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-a]');
+    if (!b) return;
+    e.stopPropagation();
+    actions[b.dataset.a]?.();
+    b.blur();
+    showUI();
+  });
+  wrap.addEventListener('dblclick', (e) => { if (e.target.closest('.pl-bar, .pl-top, button')) e.stopPropagation(); });
 
   const onKey = (e) => {
-    if (e.target.matches('input, textarea, select, video')) return;
+    if (e.target.matches('input:not([type=range]), textarea, select')) return;
     const k = e.key.toLowerCase();
-    if (k === ' ' || k === 'k') { e.preventDefault(); v.paused ? v.play() : v.pause(); }
-    else if (k === 'arrowright') { e.preventDefault(); v.currentTime += 10; }
-    else if (k === 'arrowleft') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10); }
-    else if (k === 'f' || k === 'כ') { document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen?.(); }
-    else if ((k === 'n' || k === 'מ') && next) { location.hash = `#/watch/${next.id}`; }
+    if (k === ' ' || k === 'k') { e.preventDefault(); togglePlay(); }
+    else if (k === 'arrowright') { e.preventDefault(); actions.fwd10(); }
+    else if (k === 'arrowleft') { e.preventDefault(); actions.back10(); }
+    else if (k === 'arrowup') { e.preventDefault(); v.muted = false; v.volume = Math.min(1, v.volume + 0.1); }
+    else if (k === 'arrowdown') { e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1); }
+    else if (k === 'm' || k === 'צ') actions.mute();
+    else if (k === 'f' || k === 'כ') toggleFs();
+    else if ((k === 's' || k === 'ד') && isSeries) skipIntro();
+    else if ((k === 'n' || k === 'מ') && next) actions.next();
+    else return;
+    showUI();
   };
   const onHide = () => { if (document.visibilityState === 'hidden') beacon(); };
+  const onFs = () => document.body.classList.toggle('pl-fs', !!document.fullscreenElement);
   document.addEventListener('keydown', onKey);
   document.addEventListener('visibilitychange', onHide);
+  document.addEventListener('fullscreenchange', onFs);
   window.addEventListener('pagehide', beacon);
+  onFs();
 
   cleanup = () => {
     if (!finished) beacon();
     clearInterval(timer);
     clearInterval(nextTimer);
+    clearInterval(tick);
+    clearTimeout(hideTimer);
     document.removeEventListener('keydown', onKey);
     document.removeEventListener('visibilitychange', onHide);
+    document.removeEventListener('fullscreenchange', onFs);
     window.removeEventListener('pagehide', beacon);
     v.pause();
     v.removeAttribute('src');
     v.load(); // stop downloading
     document.title = 'הספרייה שלי';
     libraryCache = null;
+    // full screen stays on only when going straight to another episode
+    setTimeout(() => {
+      if (!location.hash.startsWith('#/watch/') && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      if (!location.hash.startsWith('#/watch/')) document.body.classList.remove('pl-fs');
+    }, 0);
   };
 }
 

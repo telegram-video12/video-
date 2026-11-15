@@ -399,8 +399,14 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             fields["overview"] = payload["overview"]
         if "poster" in payload:
             fields["poster"] = payload["poster"] or None
+        for key in ("intro_start", "intro_end"):  # the opening of a series, for "skip intro" (seconds; null = clear)
+            if key in payload:
+                try:
+                    fields[key] = max(0.0, float(payload[key])) if payload[key] is not None else None
+                except (TypeError, ValueError) as e:
+                    raise ApiError(400, "bad values") from e
         try:
-            db.update_title(title_id, **fields)
+            db.update_title(title_id, soft=set(fields) <= {"intro_start", "intro_end"}, **fields)
         except Exception as e:  # noqa: BLE001 - e.g. unique (kind, norm_name) clash
             raise ApiError(400, str(e)) from e
         tmdb = scanner.tmdb
