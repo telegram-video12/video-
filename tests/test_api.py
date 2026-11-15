@@ -339,7 +339,7 @@ def test_tmdb_merges_same_movie_with_different_names(client, monkeypatch):
     db = client.app.state.db
     assert len(client.get("/api/library").json()["titles"]) == 2
 
-    async def lookup(self, kind, name, year=None, tmdb_id=None):
+    async def lookup(self, kind, name, year=None, tmdb_id=None, **kw):
         return {"tmdb_id": 27205, "tmdb_name": "התחלה", "overview": "...", "poster": None, "backdrop": None, "year": 2010}
     monkeypatch.setattr(TMDB, "lookup", lookup)
     asyncio.run(TMDB("k").enrich_pending(db))
@@ -475,7 +475,7 @@ def test_tmdb_stops_on_rejected_key_and_hides_it(client, monkeypatch, caplog):
     scan(client)
     calls = []
 
-    async def lookup(self, kind, name, year=None, tmdb_id=None):
+    async def lookup(self, kind, name, year=None, tmdb_id=None, **kw):
         calls.append(name)
         req = httpx.Request("GET", "https://api.themoviedb.org/3/search/movie?api_key=SECRETKEY")
         raise httpx.HTTPStatusError("401", request=req, response=httpx.Response(401, request=req))
@@ -541,7 +541,7 @@ def test_upload_named_like_tmdb_title_joins_it_and_remakes_stay_apart(client, mo
     tg.messages = [(1, vm(1, "Spider-Man No Way Home (2021)")), (2, vm(2, "מלך האריות (1994)"))]
     scan(client)
 
-    async def lookup(self, kind, name, year=None, tmdb_id=None):
+    async def lookup(self, kind, name, year=None, tmdb_id=None, **kw):
         heb = {"Spider-Man No Way Home": "ספיידרמן: אין דרך הביתה", "מלך האריות": "מלך האריות"}[name]
         return {"tmdb_id": hash(name) % 1000, "tmdb_name": heb, "overview": "", "poster": None, "backdrop": None, "year": year}
     monkeypatch.setattr(TMDB, "lookup", lookup)
@@ -581,7 +581,7 @@ def test_tmdb_details_genres_rating_cast_and_season_marking(client, monkeypatch)
     data = {"התחלה": ("Inception", ["מדע בדיוני", "אקשן"], 8.4), "שרק": ("Shrek", ["אנימציה", "קומדיה"], 7.7),
             "נארוטו": ("NARUTO", ["אנימציה", "אקשן"], 8.0)}
 
-    async def lookup(self, kind, name, year=None, tmdb_id=None):
+    async def lookup(self, kind, name, year=None, tmdb_id=None, **kw):
         orig, genres, rating = data[name]
         return {"tmdb_id": abs(hash(name)) % 9999, "tmdb_name": name, "original_name": orig, "overview": "...",
                 "poster": None, "backdrop": None, "year": year, "genres": genres, "rating": rating, "runtime": 100,

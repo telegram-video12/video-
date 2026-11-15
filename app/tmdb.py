@@ -67,11 +67,13 @@ class TMDB:
                     return [item]
         return []
 
-    async def lookup(self, kind: str, name: str, year: int | None = None, tmdb_id: int | None = None) -> dict | None:
+    async def lookup(self, kind: str, name: str, year: int | None = None, tmdb_id: int | None = None,
+                     have_overview: bool = False) -> dict | None:
         media_type = "tv" if kind == "series" else "movie"
         async with self._client_ctx() as client:
-            if tmdb_id:
-                item = await self._get(client, f"/{media_type}/{tmdb_id}", language="he-IL")
+            if tmdb_id:  # already matched: ONE call brings details + cast
+                item = await self._get(client, f"/{media_type}/{tmdb_id}", language="he-IL",
+                                       append_to_response="credits")
             else:
                 params = {"query": name, "language": "he-IL"}
                 if year:
@@ -86,12 +88,12 @@ class TMDB:
                 if not res:
                     return None
                 item = res[0]
-            # one details call gives genres, rating, length and cast (credits) in Hebrew
-            det = await self._get(client, f"/{media_type}/{item['id']}", language="he-IL",
-                                  append_to_response="credits")
-            item = {**item, **det}
+                # one details call gives genres, rating, length and cast (credits) in Hebrew
+                det = await self._get(client, f"/{media_type}/{item['id']}", language="he-IL",
+                                      append_to_response="credits")
+                item = {**item, **det}
             overview = item.get("overview")
-            if not overview:
+            if not overview and not have_overview:  # English overview only when there is none at all
                 en = await self._get(client, f"/{media_type}/{item['id']}", language="en-US")
                 overview = en.get("overview")
         date = item.get("first_air_date") or item.get("release_date") or ""
@@ -115,7 +117,8 @@ class TMDB:
 
     async def enrich_title(self, db, title: dict, tmdb_id: int | None = None) -> bool:
         try:
-            meta = await self.lookup(title["kind"], title["name"], title.get("year"), tmdb_id)
+            meta = await self.lookup(title["kind"], title["name"], title.get("year"), tmdb_id,
+                                     have_overview=bool(title.get("overview")))
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:  # key revoked/replaced: no point trying the rest
                 if not self.stopped:
@@ -136,7 +139,7 @@ class TMDB:
             tmdb_checked=1,
             tmdb_id=meta["tmdb_id"],
             name=meta["tmdb_name"] or title["name"],
-            overview=meta["overview"],
+            overview=meta["overview"] or title.get("overview"),
             poster=meta["poster"],
             backdrop=meta["backdrop"],
             year=meta["year"] or title.get("year"),
@@ -161,7 +164,7 @@ class TMDB:
         db.merge_by_name(normalize(meta["tmdb_name"] or ""))  # entries whose name matches this TMDB name
         return True
 
-    async def enrich_pending(self, db, concurrency: int = 6) -> None:
+    async def enrich_pending(self, db, concurrency: int = 12) -> None:
         if self.status["running"]:
             return
         pending = db.titles_needing_tmdb()
