@@ -35,3 +35,17 @@ def test_watchlist_history_and_stats(client):
 
     client.post(f"/api/watchlist/{movie['id']}", json={"on": False})
     assert client.get("/api/mylist").json()["watchlist"] == []
+
+
+def test_recently_added_means_added_to_the_library(client):
+    login(client)
+    scan(client)
+    tg = client.app.state.tg
+    from test_api import vm
+    old = vm(50, "החיים זה לא הכל עונה 1 פרק 1")
+    old.date = 1000  # posted on Telegram long ago, but added to the library just now
+    tg.messages.append((50, old))
+    import asyncio
+    asyncio.run(client.app.state.scanner.scan())
+    first = client.get("/api/library?kind=series&limit=5").json()["titles"][0]
+    assert first["name"] == "החיים זה לא הכל"

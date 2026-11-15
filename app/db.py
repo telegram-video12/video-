@@ -361,6 +361,7 @@ class Database:
                    COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,
                    MAX(m.added_at) AS last_added,
+                   MAX(m.id) AS last_in,
                    MIN(m.id) AS first_media_id,
                    COUNT(DISTINCT CASE WHEN p.completed = 1 THEN {EP_KEY} END) AS watched_count,
                    MAX(CASE WHEN p.completed = 1 OR p.position >= {MIN_STARTED} THEN p.updated_at END) AS last_watched,
@@ -369,7 +370,7 @@ class Database:
             JOIN media m ON m.title_id = t.id AND m.hidden = 0
             LEFT JOIN progress p ON p.media_id = m.id
             GROUP BY t.id
-            ORDER BY last_added DESC
+            ORDER BY last_in DESC  -- newest in YOUR library first (not by the date it was posted on Telegram)
             """
         )
 
