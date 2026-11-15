@@ -408,12 +408,21 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
 
     # -------------------------------------------------------------- settings
+    async def safe_me():
+        if not tg.authorized:
+            return None
+        try:
+            return await asyncio.wait_for(tg.me(), 10)
+        except Exception as e:  # noqa: BLE001 - e.g. the phone switched networks; Telethon reconnects
+            log.warning("could not reach Telegram: %s", e)
+            return {"name": "(אין חיבור כרגע, מתחבר מחדש...)", "username": None}
+
     async def status(request: Request):
         return ok({
             "telegram_configured": tg.configured,
             "telegram_authorized": tg.authorized,
             "api_id": settings.api_id or None,
-            "me": await tg.me() if tg.authorized else None,
+            "me": await safe_me(),
             "tmdb": bool(scanner.tmdb),
             "tmdb_status": scanner.tmdb.status if scanner.tmdb else None,
             "scan": scanner.status,
@@ -527,6 +536,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
     @asynccontextmanager
     async def lifespan(app):
+        from .library import repair
+        repair(db)
         try:
             await tg.start()
         except Exception:  # noqa: BLE001 - site still works for browsing the library
@@ -543,6 +554,21 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
     async def api_error(request: Request, exc: ApiError):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status)
+
+    async def server_error(request: Request, exc: Exception):
+        """Show what went wrong instead of a bare 500, and keep a log in data/errors.log."""
+        import traceback
+
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        log.error("error on %s\n%s", request.url.path, tb)
+        try:
+            path = settings.data_dir / "errors.log"
+            old = path.read_text(encoding="utf-8")[-20000:] if path.exists() else ""
+            path.write_text(old + f"\n--- {time.ctime()} {request.url.path}\n{tb}", encoding="utf-8")
+        except OSError:
+            pass
+        return JSONResponse({"detail": f"שגיאה בשרת ({request.url.path}): {type(exc).__name__}: {exc}"},
+                            status_code=500)
 
     R = Route
     routes = [
@@ -565,7 +591,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/scan", start_scan, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
-    app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={ApiError: api_error})
+    app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={ApiError: api_error, Exception: server_error})
     app.add_middleware(AuthMiddleware, settings=settings, valid_token=valid_token)
     app.state.db, app.state.tg, app.state.scanner, app.state.settings = db, tg, scanner, settings
     return app

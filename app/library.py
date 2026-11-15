@@ -128,4 +128,20 @@ def regroup_all(db: Database, force: bool = False) -> int:
     moved = sum(regroup_chat(db, c["id"], corpus, force) for c in db.chats())
     db.x("UPDATE media SET auto_norm = (SELECT norm_name FROM titles t WHERE t.id = media.title_id) "
          "WHERE auto_norm IS NULL AND manual = 0")
+    repair(db)
     return moved
+
+
+def repair(db: Database) -> int:
+    """Give videos that lost their title (e.g. an interrupted update) a title again."""
+    fixed = 0
+    for m in db.orphan_media():
+        chat = db.get_chat(m["chat_id"]) or {"title": ""}
+        info = parse_media(m["caption"], m["file_name"], chat.get("title", ""), chat_branding(chat, db))
+        norm = normalize(info.name) or info.name
+        title_id = db.get_or_create_title(info.kind, info.name, norm, info.year)
+        db.update_media(m["id"], title_id=title_id)
+        fixed += 1
+    if fixed:
+        log.warning("repaired %d videos without a title", fixed)
+    return fixed

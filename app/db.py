@@ -213,6 +213,10 @@ class Database:
             self.conn.commit()
             self.version += 1
 
+    def orphan_media(self) -> list[dict]:
+        """Videos whose title row is missing (should not happen; repaired at start-up)."""
+        return self.q("SELECT * FROM media WHERE title_id NOT IN (SELECT id FROM titles)")
+
     def delete_empty_titles(self) -> None:
         self.x("DELETE FROM titles WHERE id NOT IN (SELECT DISTINCT title_id FROM media)")
 
@@ -415,6 +419,8 @@ class Database:
             if not point or point["state"] == "done":
                 continue
             title = self.get_title(row["title_id"])
+            if not title:
+                continue
             out.append({"title": title, **point})
             if len(out) >= limit:
                 break
