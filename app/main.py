@@ -288,8 +288,11 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                     score[g] = score.get(g, 0) + 1
         day = int(time.time() // 86400)  # the order changes once a day, so the rows feel fresh
 
+        shown: set[int] = set()  # each title appears in one genre row only, so the rows show more variety
+
         def pick(g: str) -> list[dict]:
-            cands = [t for t in items if g in t["genres"] and not (t["media_count"] and t["watched_count"] >= t["media_count"])]
+            cands = [t for t in items if g in t["genres"] and t["id"] not in shown
+                     and not (t["media_count"] and t["watched_count"] >= t["media_count"])]
             cands.sort(key=lambda t: (t["watched_count"] == 0 and not t["poster"],  # pictures first
                                       -(t["rating"] or 0) + ((t["id"] * 7919 + day) % 13) / 10))
             return [card(t) for t in cands[:20]]
@@ -299,6 +302,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             row = pick(g)
             if len(row) >= 4:
                 rows.append({"genre": g, "titles": row})
+                shown.update(t["id"] for t in row)
             if len(rows) >= 4:
                 break
         return ok({"new": [card(t) for t in fresh[:20]], "genres": rows, "personal": based_on_you})

@@ -468,7 +468,7 @@ function posterCard(t) {
   const watchedAll = t.media_count && t.watched_count >= t.media_count;
   const p = t.media_count ? (t.watched_count / t.media_count) * 100 : 0;
   const sub = t.kind === 'series'
-    ? `${t.season_count > 1 ? t.season_count + ' עונות · ' : ''}${t.media_count} פרקים`
+    ? `${t.season_count > 1 ? t.season_count + ' עונות · ' : ''}${t.media_count === 1 ? 'פרק אחד' : t.media_count + ' פרקים'}`
     : null;
   // numbers in a right-to-left line get reordered by the browser, so each one is isolated
   const movieSub = [t.year, t.duration ? fmtLen(t.duration) : ''].filter(Boolean).map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ') || 'סרט';
