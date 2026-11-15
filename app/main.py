@@ -335,7 +335,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
     async def duplicates(request: Request):
         """Titles that look like the same movie/series with extra words, for you to decide."""
-        return ok({"pairs": possible_duplicates(db)})
+        pairs = possible_duplicates(db)
+        return ok({"pairs": pairs[:300], "total": len(pairs)})
 
     async def duplicates_dismiss(request: Request):
         key = str((await body(request)).get("key") or "")

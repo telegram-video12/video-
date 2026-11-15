@@ -123,15 +123,66 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: 
 
 
 # ------------------------------------------------------------ same title, extra words
-def _similar_pairs(db: Database) -> list[dict]:
-    """Titles whose name is another title's name plus one or two extra words at the start or the end
-    ("אבא גנוב 1" / "אבא גנוב 1 גוזלן"). Extra words with digits never count ("אבא גנוב" / "אבא גנוב 2")."""
+def _title_rows(db: Database) -> list[dict]:
     rows = db.q("""SELECT t.id, t.kind, t.name, t.year, t.tmdb_id, t.poster,
                           MAX(m.duration) AS duration, MAX(m.manual) AS manual, COUNT(m.id) AS files
                    FROM titles t JOIN media m ON m.title_id = t.id AND m.hidden = 0 GROUP BY t.id""")
-    index: dict[tuple, list[dict]] = {}
     for r in rows:
         r["_w"] = tuple(words(r["name"] or "").split())
+    return rows
+
+
+def _num(word: str) -> bool:
+    return any(ch.isdigit() for ch in word)
+
+
+def _years_ok(a: dict, b: dict) -> bool:
+    return not (a["year"] and b["year"] and abs(a["year"] - b["year"]) > 1)
+
+
+def _contained_pairs(rows: list[dict]) -> list[dict]:
+    """A title whose name CONTAINS another title's whole name, with extra words before and/or after:
+    "חן סרטים אבא גנוב 2 ישראלי הועלה" contains "אבא גנוב 2". Rules that keep different titles apart:
+    the inner name has at least two words; no number right before or after it ("אבא גנוב" is not inside
+    "אבא גנוב 2"), except "1" right after a name without a number ("אבא גנוב 1" = TMDB's "אבא גנוב")."""
+    index: dict[tuple, list[dict]] = {}
+    for r in rows:
+        w = r["_w"]
+        if len(w) >= 2:
+            index.setdefault((r["kind"], w), []).append(r)
+            if not _num(w[-1]):  # the first movie of a series is often named without "1"
+                index.setdefault((r["kind"], w + ("1",)), []).append(r)
+    pairs, seen = [], set()
+    for host in rows:
+        w = host["_w"]
+        n = len(w)
+        if n < 3:
+            continue
+        rank = 0
+        for size in range(n, 1, -1):  # longer inner names first (all of it: "אבא גנוב 1" = "אבא גנוב")
+            for i in range(0, n - size + 1):
+                inner = w[i:i + size]
+                before, after = w[:i], w[i + size:]
+                if (before and _num(before[-1])) or (after and _num(after[0])):
+                    continue
+                for t in index.get((host["kind"], inner), []):
+                    if t["id"] == host["id"] or len(t["_w"]) >= n or not _years_ok(t, host):
+                        continue
+                    if (t["id"], host["id"]) in seen:
+                        continue
+                    seen.add((t["id"], host["id"]))
+                    pairs.append({"short": t, "long": host, "rank": rank,
+                                  "extras": [x for x in (" ".join(before), " ".join(after)) if x]})
+                    rank += 1
+    return pairs  # every candidate of a host, best (longest inner name) first
+
+
+def _similar_pairs(db: Database, rows: list[dict] | None = None) -> list[dict]:
+    """Titles whose name is another title's name plus one or two extra words at the start or the end
+    ("אבא גנוב 1" / "אבא גנוב 1 גוזלן"). Extra words with digits never count ("אבא גנוב" / "אבא גנוב 2")."""
+    rows = rows if rows is not None else _title_rows(db)
+    index: dict[tuple, list[dict]] = {}
+    for r in rows:
         if r["_w"]:
             index.setdefault((r["kind"], r["_w"]), []).append(r)
     pairs, seen = [], set()
@@ -141,30 +192,31 @@ def _similar_pairs(db: Database) -> list[dict]:
             continue
         for cut in (-1, -2, 1, 2):
             short, extra = (w[:cut], w[cut:]) if cut < 0 else (w[cut:], w[:cut])
-            if not short or len("".join(short)) < 2 or any(ch.isdigit() for x in extra for ch in x):
+            if not short or len("".join(short)) < 2 or any(_num(x) for x in extra):
                 continue
             for o in index.get((r["kind"], short), []):
-                if o["id"] == r["id"] or (o["id"], r["id"]) in seen:
-                    continue
-                if o["year"] and r["year"] and abs(o["year"] - r["year"]) > 1:
+                if o["id"] == r["id"] or (o["id"], r["id"]) in seen or not _years_ok(o, r):
                     continue
                 if o["tmdb_id"] and r["tmdb_id"] and o["tmdb_id"] != r["tmdb_id"]:
                     continue
                 seen.add((o["id"], r["id"]))
-                pairs.append({"short": o, "long": r, "extra": " ".join(extra)})
+                pairs.append({"short": o, "long": r, "extra": " ".join(extra), "extras": [" ".join(extra)]})
     return pairs
 
 
-def _same_length(a: dict, b: dict) -> bool:
+def _same_length(a: dict, b: dict, ratio: float = 0.03, floor: float = 90) -> bool:
     da, db_ = a["duration"], b["duration"]
-    return bool(da and db_ and abs(da - db_) <= max(0.03 * max(da, db_), 90))
+    return bool(da and db_ and abs(da - db_) <= max(ratio * max(da, db_), floor))
 
 
 def merge_similar_movies(db: Database) -> int:
-    """A movie that is another movie's name plus a word, with a file of the same length, is the same
-    movie: join them (all uploads stay inside as versions). Series are only suggested, never joined here."""
+    """Join uploads of the same movie that carry extra words in the name (all uploads stay inside as
+    versions). 1) one extra word at the start or end; 2) the name of a movie already in the library inside
+    a longer name ("חן סרטים אבא גנוב 2 ישראלי הועלה"). Always only with a file of the same length.
+    Series are only suggested (episodes of different series have similar lengths)."""
     merged = 0
-    for p in _similar_pairs(db):
+    rows = _title_rows(db)
+    for p in _similar_pairs(db, rows):
         a, b = p["short"], p["long"]
         if a["kind"] != "movie" or a["manual"] or b["manual"] or not _same_length(a, b):
             continue
@@ -176,24 +228,53 @@ def merge_similar_movies(db: Database) -> int:
             continue  # one of them was joined already in this round
         db.merge_titles(b["id"], a["id"])
         merged += 1
+    rows = _title_rows(db)
+    joined: set[int] = set()
+    for p in _contained_pairs(rows):
+        t, host = p["short"], p["long"]
+        if host["id"] in joined or t["id"] in joined:
+            continue
+        if t["kind"] != "movie" or host["tmdb_id"] or host["manual"] or not _same_length(t, host, 0.02, 90):
+            continue  # TMDB knows the longer name as its own movie, or the length differs: try the next one
+        if not db.get_title(t["id"]) or not db.get_title(host["id"]):
+            continue
+        db.merge_titles(host["id"], t["id"])
+        joined.add(host["id"])
+        merged += 1
     if merged:
         log.info("%d movies with extra words in the name joined with the same movie", merged)
     return merged
 
 
 def possible_duplicates(db: Database) -> list[dict]:
-    """What is left for you to decide: looks like the same title but was not joined automatically."""
+    """What is left for you to decide: looks like the same title but was not joined automatically.
+    Remembered until the library changes (Settings asks for the count often)."""
+    stamp = (db.version, db.soft_version, db.get_pref("dup_dismissed"))
+    cached = getattr(db, "_dups_cache", None)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    out = _possible_duplicates(db)
+    db._dups_cache = (stamp, out)
+    return out
+
+
+def _possible_duplicates(db: Database) -> list[dict]:
     try:
         dismissed = set(json.loads(db.get_pref("dup_dismissed") or "[]"))
     except ValueError:
         dismissed = set()
-    out = []
-    for p in _similar_pairs(db):
+    rows = _title_rows(db)
+    out, keys = [], set()
+    contained = sorted(_contained_pairs(rows), key=lambda p: (not p["short"]["tmdb_id"], p["rank"]))
+    hosts: set[int] = set()
+    for p in _similar_pairs(db, rows) + contained:
         a, b = p["short"], p["long"]
         key = f"{min(a['id'], b['id'])}-{max(a['id'], b['id'])}"
-        if key in dismissed:
-            continue
-        out.append({"key": key, "kind": a["kind"], "extra": p["extra"],
+        if key in dismissed or key in keys or ("rank" in p and b["id"] in hosts):
+            continue  # one suggestion per long name: the best match (a TMDB title, the longest name)
+        keys.add(key)
+        hosts.add(b["id"])
+        out.append({"key": key, "kind": a["kind"], "extra": " … ".join(p["extras"]), "extras": p["extras"],
                     "a": {k: a[k] for k in ("id", "name", "year", "poster", "files", "duration")},
                     "b": {k: b[k] for k in ("id", "name", "year", "poster", "files", "duration")}})
     return out

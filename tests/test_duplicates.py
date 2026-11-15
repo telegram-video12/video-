@@ -58,3 +58,49 @@ def test_smart_tmdb_search_drops_extra_words_only_on_exact_match():
     assert run("אבא גנוב 1 גוזלן", 3000) == []            # length does not fit: not joined
     assert run("גוזלן אבא גנוב 1", 5400)[0]["id"] == 7      # extra word at the start
     assert run("אבא גנוב", 5400) == []                     # nothing left that matches exactly
+
+
+def test_smart_search_both_sides_and_first_movie_without_1():
+    t = TMDB("k")
+
+    async def fake_get(client, path, **params):
+        if path.startswith("/search/movie"):
+            q = params["query"]
+            if q in ("אבא גנוב 1", "אבא גנוב"):
+                return {"results": [{"id": 7, "title": "אבא גנוב"}]}
+            if q == "אבא גנוב 2":
+                return {"results": [{"id": 8, "title": "אבא גנוב 2"}]}
+            return {"results": []}
+        return {"runtime": 90}
+
+    t._get = fake_get
+    run = lambda name: asyncio.run(t._search_smart(None, "movie", name, 5400))  # noqa: E731
+    assert run("אלי ה סרטים אבא גנוב 1 ישראלי")[0]["id"] == 7   # 3 words in front, 1 after
+    assert run("סרטים אבא גנוב 1 ישראלי")[0]["id"] == 7         # one word each side, "1" = no number
+    assert run("חן סרטים אבא גנוב 2 ישראלי הועלה")[0]["id"] == 8
+    assert run("אבא גנוב 2 גוזלן")[0]["id"] == 8                 # never "אבא גנוב" (the 2 is kept)
+
+
+def test_name_inside_a_longer_name_joins_same_movie(client):
+    login(client)
+    db = client.app.state.db
+    tg = client.app.state.tg
+    tg.messages = [
+        (1, vm(1, "אבא גנוב (1987)", duration=5220)), (2, vm(2, "אבא גנוב 2 (1989)", duration=5400)),
+        (3, vm(3, "אלי ה סרטים אבא גנוב 1 ישראלי", duration=5230)),
+        (4, vm(4, "חן סרטים אבא גנוב 2 ישראלי הועלה", duration=5410)),
+        (5, vm(5, "אבא גנוב 1 - טבריה", duration=5220)),
+        (6, vm(6, "חן סרטים אבא גנוב 2 ישראלי", duration=6600)),     # other length: only suggested
+    ]
+    scan(client)
+    # pretend TMDB recognised the two clean names
+    for name, tid in (("אבא גנוב", 7), ("אבא גנוב 2", 8)):
+        db.x("UPDATE titles SET tmdb_id = ?, tmdb_checked = 1 WHERE name = ?", (tid, name))
+    from app.library import merge_similar_movies, possible_duplicates
+    merge_similar_movies(db)
+    db._titles_cache = None
+    names = sorted(t["name"] for t in client.get("/api/library?limit=50").json()["titles"])
+    assert names == ["אבא גנוב", "אבא גנוב 2", "חן סרטים אבא גנוב 2 ישראלי"]
+    sugg = possible_duplicates(db)
+    assert [(p["a"]["name"], p["b"]["name"], p["extras"]) for p in sugg] == \
+        [("אבא גנוב 2", "חן סרטים אבא גנוב 2 ישראלי", ["חן סרטים", "ישראלי"])]

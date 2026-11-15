@@ -76,17 +76,26 @@ class TMDB:
         words = name.split()
         if len(words) < 2:
             return []
-        variants = [words[:-1], words[:-2], words[1:], words[2:]]
-        for v in variants:
+        n = len(words)
+        # drop words from the end, from the start, then from both ("חן סרטים אבא גנוב 1 ישראלי")
+        cuts = [(0, 1), (0, 2), (1, 0), (2, 0), (1, 1), (1, 2), (2, 1), (2, 2), (3, 0), (0, 3), (3, 1), (1, 3)]
+        tried = set()
+        for start, end in cuts:
+            v = words[start:n - end]
             query = " ".join(v)
-            if not v or len(normalize(query)) < 2:
+            if len(v) < 1 or len(normalize(query)) < 2 or query in tried:
                 continue
+            if any(ch.isdigit() for x in words[:start] + words[n - end:] for ch in x):
+                continue  # never drop a number: "אבא גנוב 2" must not become "אבא גנוב"
+            tried.add(query)
             res = (await self._get(client, f"/search/{media_type}", query=query, language="he-IL")).get("results") or []
-            want = normalize(query)
+            want = {normalize(query)}
+            if len(v) > 1 and v[-1] == "1":  # the first movie is usually named without "1" on TMDB
+                want.add(normalize(" ".join(v[:-1])))
             for item in res[:5]:
                 names = {normalize(item.get("name") or item.get("title") or ""),
                          normalize(item.get("original_name") or item.get("original_title") or "")}
-                if want not in names:
+                if not want & names:
                     continue
                 if media_type == "movie" and duration:
                     det = await self._get(client, f"/movie/{item['id']}")

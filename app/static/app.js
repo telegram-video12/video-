@@ -1435,17 +1435,17 @@ async function pageSettings(section) {
   const drawDups = async () => {
     const box = $('#dups');
     if (!box) return;
-    let pairs;
-    try { pairs = (await api('/api/duplicates')).pairs; } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    let pairs, total;
+    try { ({pairs, total} = await api('/api/duplicates')); } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
     if (!pairs.length) { box.innerHTML = '<div class="note">✓ אין כרגע כפילויות לבדיקה.</div>'; return; }
     const one = (x, kind) => `<a class="dup-t" href="#/title/${x.id}"><div class="poster">${img(x.poster)}</div>
       <div><b>${esc(x.name)}</b><span>${[x.year, kind === 'movie' && x.duration ? fmtDur(x.duration) : '', x.files === 1 ? 'קובץ אחד' : `${x.files} קבצים`].filter(Boolean).map((y) => `<bdi>${esc(y)}</bdi>`).join(' · ')}</span></div></a>`;
-    box.innerHTML = `<div class="muted" style="font-size:13px;margin-bottom:8px">${pairs.length === 1 ? 'זוג אחד' : pairs.length + ' זוגות'}</div>` + pairs.map((p) => `
+    box.innerHTML = `<div class="muted" style="font-size:13px;margin-bottom:8px">${total === 1 ? 'זוג אחד' : n(total) + ' זוגות'}${total > pairs.length ? ` (מוצגים ${pairs.length} הראשונים)` : ''}</div>` + pairs.map((p) => `
       <div class="dup" data-key="${p.key}">
         <div class="dup-pair">${one(p.a, p.kind)}<span class="dup-eq">≈</span>${one(p.b, p.kind)}</div>
         <div class="dup-acts">
           <button class="btn small primary" data-join="${p.b.id}" data-into="${p.a.id}">אחד</button>
-          <button class="btn small" data-strip="${esc(p.extra)}">מחק "${esc(p.extra)}" בכל האתר</button>
+          ${(p.extras || [p.extra]).map((x) => `<button class="btn small" data-strip="${esc(x)}">מחק "${esc(x)}" בכל האתר</button>`).join('')}
           <button class="btn small ghost" data-dismiss="${p.key}">לא אותו דבר</button>
         </div></div>`).join('');
   };
