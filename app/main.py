@@ -88,6 +88,16 @@ class AuthMiddleware:
         path = scope["path"]
         if path in PUBLIC_PATHS or path.startswith("/static/"):
             return await self.app(scope, receive, send)
+        if not path.startswith("/api/stream"):  # note slow answers in the window, to find what makes a page slow
+            started = time.monotonic()
+            inner = send
+
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    took = time.monotonic() - started
+                    if took > 1.5:
+                        log.warning("slow: %s took %.1f s", path, took)
+                await inner(message)
         request = Request(scope)
         if self.settings.needs_setup or not self.valid_token(request.cookies.get(COOKIE)):
             if path.startswith("/api/"):

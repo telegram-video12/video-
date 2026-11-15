@@ -90,6 +90,7 @@ class Database:
         self._titles_cache: tuple[int, int, float, list[dict]] | None = None
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA synchronous = NORMAL")  # safe with WAL, and much faster saving on Windows
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
