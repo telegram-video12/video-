@@ -189,26 +189,54 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         }
 
     async def library(request: Request):
-        titles = []
-        for t in db.list_titles():
+        """Paged library: ?kind=all|series|movie&q=search&offset=0&limit=60"""
+        qp = request.query_params
+        kind = qp.get("kind", "all")
+        q = normalize(qp.get("q", "").strip())
+        offset = max(0, int(qp.get("offset", 0) or 0))
+        limit = min(200, max(1, int(qp.get("limit", 60) or 60)))
+        items = db.library_titles()
+        if q:
+            items = [t for t in items if q in normalize(t["name"])]
+        counts = {"all": len(items), "series": sum(1 for t in items if t["kind"] == "series")}
+        counts["movie"] = counts["all"] - counts["series"]
+        if kind in ("series", "movie"):
+            items = [t for t in items if t["kind"] == kind]
+        page = []
+        for t in items[offset:offset + limit]:
+            t = dict(t)
             t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
-            titles.append(t)
-        cont = [
-            {
-                "title": {k: c["title"][k] for k in ("id", "name", "kind", "backdrop", "poster")},
-                "media": media_out(c["media"]),
-                "position": c["position"],
-                "state": c["state"],
-            }
-            for c in db.continue_watching()
-        ]
-        return ok({"titles": titles, "continue": cont})
+            page.append(t)
+        out = {"titles": page, "total": len(items), "counts": counts, "offset": offset}
+        if offset == 0 and not q:
+            out["continue"] = [
+                {
+                    "title": {k: c["title"][k] for k in ("id", "name", "kind", "backdrop", "poster")},
+                    "media": media_out(c["media"]),
+                    "position": c["position"],
+                    "state": c["state"],
+                }
+                for c in db.continue_watching()
+            ]
+        return ok(out)
 
     async def title_detail(request: Request):
         title_id = request.path_params["id"]
         t = db.get_title(title_id)
         if not t:
             raise ApiError(404, "לא נמצא")
+        if scanner.tmdb and not t["tmdb_checked"]:  # fetch the poster now instead of waiting for the queue
+            any_media = db.q1("SELECT id FROM media WHERE title_id = ?", (title_id,))
+            try:
+                await asyncio.wait_for(scanner.tmdb.enrich_title(db, t), 8)
+            except asyncio.TimeoutError:
+                pass
+            t = db.get_title(title_id)
+            if not t and any_media:  # merged into an older entry of the same movie/series
+                title_id = db.get_media(any_media["id"])["title_id"]
+                t = db.get_title(title_id)
+            if not t:
+                raise ApiError(404, "לא נמצא")
         hidden = request.query_params.get("hidden") in ("1", "true")
         items = [media_out(m) for m in db.title_media(title_id, include_hidden=hidden)]
         if not t["poster"] and items:
@@ -384,6 +412,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "api_id": settings.api_id or None,
             "me": await tg.me() if tg.authorized else None,
             "tmdb": bool(scanner.tmdb),
+            "tmdb_status": scanner.tmdb.status if scanner.tmdb else None,
             "scan": scanner.status,
             "chats": db.chats(),
             "scan_interval_minutes": settings.scan_interval_minutes,
@@ -397,6 +426,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             scanner.tmdb = TMDB(key) if key else None
             if key:  # look up titles that were added before the key existed
                 db.x("UPDATE titles SET tmdb_checked = 0 WHERE tmdb_id IS NULL")
+                scanner.start_tmdb()
         if "api_id" in payload or "api_hash" in payload:
             api_id = re.sub(r"\D", "", str(payload.get("api_id") or ""))
             api_hash = str(payload.get("api_hash") or "").strip()
@@ -488,6 +518,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         task = asyncio.create_task(periodic_scan()) if settings.scan_interval_minutes > 0 else None
         if tg.authorized:
             asyncio.create_task(scanner.scan())  # pick up new episodes on start
+        elif scanner.tmdb:
+            scanner.start_tmdb()
         yield
         if task:
             task.cancel()

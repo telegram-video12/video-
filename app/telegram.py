@@ -223,6 +223,10 @@ class Scanner:
         self.status: dict = {"running": False, "chat": None, "added": 0, "last_finished": None, "error": None}
         self._lock = asyncio.Lock()
 
+    def start_tmdb(self) -> None:
+        if self.tmdb and not self.tmdb.status["running"]:
+            self._tmdb_task = asyncio.create_task(self.tmdb.enrich_pending(self.db))
+
     async def scan(self, chat_ids: list[int] | None = None) -> dict:
         if self._lock.locked():
             return self.status
@@ -244,9 +248,8 @@ class Scanner:
                             self.db.set_chat_scanned(chat["id"], last_seen)
                     self.db.set_chat_scanned(chat["id"], last_seen)
                     log.info("scanned chat %s: %d messages checked", chat["id"], count)
-                if self.tmdb:
-                    self.status["chat"] = "TMDB"
-                    await self.tmdb.enrich_pending(self.db)
+                if self.tmdb:  # posters are fetched in the background; scanning is not held up
+                    self.start_tmdb()
             except Exception as e:  # noqa: BLE001 - surface any error in the UI
                 log.exception("scan failed")
                 self.status["error"] = str(e)

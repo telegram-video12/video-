@@ -1,6 +1,7 @@
 """Optional metadata (poster, overview, Hebrew name) from The Movie Database."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -15,6 +16,8 @@ class TMDB:
         self.api_key = api_key
         # v4 "read access tokens" are JWTs, v3 keys are 32 hex chars
         self.bearer = api_key.startswith("eyJ")
+        self._client: httpx.AsyncClient | None = None
+        self.status = {"running": False, "done": 0, "total": 0}
 
     async def _get(self, client: httpx.AsyncClient, path: str, **params) -> dict:
         headers = {}
@@ -22,13 +25,32 @@ class TMDB:
             headers["Authorization"] = f"Bearer {self.api_key}"
         else:
             params["api_key"] = self.api_key
-        r = await client.get(API + path, params=params, headers=headers, timeout=15)
+        for attempt in range(4):
+            r = await client.get(API + path, params=params, headers=headers, timeout=15)
+            if r.status_code == 429:  # rate limited: wait and retry
+                await asyncio.sleep(float(r.headers.get("retry-after") or 1) + attempt)
+                continue
+            r.raise_for_status()
+            return r.json()
         r.raise_for_status()
-        return r.json()
+        return {}
+
+    def _client_ctx(self):
+        if self._client is not None:  # shared client during a bulk run
+            client = self._client
+
+            class _Shared:
+                async def __aenter__(self_inner):
+                    return client
+
+                async def __aexit__(self_inner, *exc):
+                    return False
+            return _Shared()
+        return httpx.AsyncClient()
 
     async def lookup(self, kind: str, name: str, year: int | None = None, tmdb_id: int | None = None) -> dict | None:
         media_type = "tv" if kind == "series" else "movie"
-        async with httpx.AsyncClient() as client:
+        async with self._client_ctx() as client:
             if tmdb_id:
                 item = await self._get(client, f"/{media_type}/{tmdb_id}", language="he-IL")
             else:
@@ -64,10 +86,11 @@ class TMDB:
             log.warning("TMDB lookup failed for %s: %s", title["name"], e)
             return False
         if not meta:
-            db.update_title(title["id"], tmdb_checked=1)
+            db.update_title(title["id"], soft=True, tmdb_checked=1)
             return False
         db.update_title(
             title["id"],
+            soft=True,
             tmdb_checked=1,
             tmdb_id=meta["tmdb_id"],
             name=meta["tmdb_name"] or title["name"],
@@ -76,12 +99,33 @@ class TMDB:
             backdrop=meta["backdrop"],
             year=meta["year"] or title.get("year"),
         )
-        # The same movie/series under another name (e.g. Hebrew vs English caption) -> one entry
+        # The same movie/series under another name (e.g. Hebrew vs English caption) -> one entry.
+        # Always merge the newer entry into the older one so concurrent lookups agree.
         other = db.find_title_by_tmdb(title["kind"], meta["tmdb_id"], title["id"])
         if other:
-            db.merge_titles(title["id"], other["id"])
+            src, dst = max(other["id"], title["id"]), min(other["id"], title["id"])
+            if db.get_title(src) and db.get_title(dst):
+                db.merge_titles(src, dst)
         return True
 
-    async def enrich_pending(self, db) -> None:
-        for title in db.titles_needing_tmdb():
-            await self.enrich_title(db, title)
+    async def enrich_pending(self, db, concurrency: int = 6) -> None:
+        if self.status["running"]:
+            return
+        pending = db.titles_needing_tmdb()
+        self.status = {"running": True, "done": 0, "total": len(pending)}
+        sem = asyncio.Semaphore(concurrency)
+
+        async def one(title: dict) -> None:
+            async with sem:
+                if db.get_title(title["id"]):  # may have been merged meanwhile
+                    await self.enrich_title(db, title)
+                self.status["done"] += 1
+
+        try:
+            async with httpx.AsyncClient() as client:
+                self._client = client
+                for i in range(0, len(pending), 100):
+                    await asyncio.gather(*(one(t) for t in pending[i:i + 100]))
+        finally:
+            self._client = None
+            self.status["running"] = False

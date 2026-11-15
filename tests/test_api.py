@@ -345,3 +345,23 @@ def test_tmdb_merges_same_movie_with_different_names(client, monkeypatch):
     asyncio.run(TMDB("k").enrich_pending(db))
     titles = client.get("/api/library").json()["titles"]
     assert len(titles) == 1 and titles[0]["name"] == "התחלה" and titles[0]["media_count"] == 1
+
+
+def test_library_paging_and_search(client):
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(i, vm(i, f"סרט מספר {i} (2001)")) for i in range(1, 151)] + \
+                  [(500, vm(500, "פאודה עונה 1 פרק 1"))]
+    scan(client)
+    first = client.get("/api/library?limit=60").json()
+    assert first["total"] == 151 and len(first["titles"]) == 60 and "continue" in first
+    assert first["counts"] == {"all": 151, "series": 1, "movie": 150}
+    rest = client.get("/api/library?offset=120&limit=60").json()
+    assert len(rest["titles"]) == 31 and "continue" not in rest
+    ids = {t["id"] for t in first["titles"]} | {t["id"] for t in client.get("/api/library?offset=60&limit=60").json()["titles"]} \
+        | {t["id"] for t in rest["titles"]}
+    assert len(ids) == 151
+    assert client.get("/api/library?kind=series").json()["total"] == 1
+    found = client.get("/api/library?q=" + "מספר 14").json()
+    assert {t["name"] for t in found["titles"]} >= {"סרט מספר 14"} or {t["name"] for t in found["titles"]} >= {"מספר 14"}
+    assert found["total"] == 11  # 14, 140..149

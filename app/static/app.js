@@ -67,49 +67,80 @@ async function route() {
 window.addEventListener('hashchange', route);
 
 // --------------------------------------------------------------------- home
+// The library can hold tens of thousands of titles, so it is loaded page by page while scrolling.
 let homeFilter = 'all';
+const PAGE = 60;
 
 async function pageHome() {
-  if (!libraryCache) $app.innerHTML = '<div class="spinner"></div>';
-  libraryCache = await api('/api/library');
-  renderHome();
-  const onSearch = () => renderHome();
-  $search.addEventListener('input', onSearch);
-  cleanup = () => $search.removeEventListener('input', onSearch);
-}
+  const st = {offset: 0, total: 0, loading: false, token: 0};
+  let observer = null, timer = null;
 
-function renderHome() {
-  const {titles, continue: cont} = libraryCache;
-  const q = $search.value.trim().toLowerCase();
-  if (!titles.length) {
-    $app.innerHTML = `<div class="empty">
-      <h2>הספרייה עדיין ריקה</h2>
-      <p>בחר את קבוצות הטלגרם שמהן ייאספו הסדרות והסרטים, והפעל סריקה.</p>
-      <a class="btn primary" href="#/settings">להגדרות</a></div>`;
-    return;
+  const url = (offset) => `/api/library?kind=${homeFilter}&offset=${offset}&limit=${PAGE}&q=${encodeURIComponent($search.value.trim())}`;
+
+  async function loadMore() {
+    if (st.loading || st.offset >= st.total) return;
+    st.loading = true;
+    const token = st.token;
+    try {
+      const data = await api(url(st.offset));
+      if (token !== st.token) return;  // a newer search started meanwhile
+      $app.querySelector('#grid').insertAdjacentHTML('beforeend', data.titles.map(posterCard).join(''));
+      st.offset += data.titles.length;
+    } finally {
+      st.loading = false;
+    }
+    if (st.offset >= st.total) $app.querySelector('#more').hidden = true;
   }
-  let list = titles.filter((t) => homeFilter === 'all' || t.kind === homeFilter);
-  if (q) list = list.filter((t) => t.name.toLowerCase().includes(q));
-  const series = titles.filter((t) => t.kind === 'series').length;
 
-  const contHtml = !q && cont.length ? `
-    <section class="section">
-      <div class="section-head"><h2>המשך צפייה</h2></div>
-      <div class="row">${cont.map(contCard).join('')}</div>
-    </section>` : '';
-
-  $app.innerHTML = `${contHtml}
-    <section class="section">
-      <div class="section-head">
-        <h2>${q ? `תוצאות עבור "${esc(q)}"` : 'כל הספרייה'}</h2>
-        <div class="tabs">
-          ${[['all', `הכל (${titles.length})`], ['series', `סדרות (${series})`], ['movie', `סרטים (${titles.length - series})`]]
-            .map(([k, l]) => `<button class="tab ${homeFilter === k ? 'active' : ''}" data-f="${k}">${l}</button>`).join('')}
+  async function reload() {
+    st.token += 1;
+    const token = st.token;
+    const q = $search.value.trim();
+    const data = await api(url(0));
+    if (token !== st.token) return;
+    libraryCache = data;
+    st.offset = data.titles.length;
+    st.total = data.total;
+    const c = data.counts;
+    if (!c.all && !q) {
+      $app.innerHTML = `<div class="empty">
+        <h2>הספרייה עדיין ריקה</h2>
+        <p>בחר את קבוצות הטלגרם שמהן ייאספו הסדרות והסרטים, והפעל סריקה.</p>
+        <a class="btn primary" href="#/settings">להגדרות</a></div>`;
+      return;
+    }
+    const cont = data.continue || [];
+    const n = (x) => x.toLocaleString('he-IL');
+    $app.innerHTML = `${!q && cont.length ? `
+      <section class="section">
+        <div class="section-head"><h2>המשך צפייה</h2></div>
+        <div class="row">${cont.map(contCard).join('')}</div>
+      </section>` : ''}
+      <section class="section">
+        <div class="section-head">
+          <h2>${q ? `תוצאות עבור "${esc(q)}"` : 'כל הספרייה'}</h2>
+          <div class="tabs">
+            ${[['all', `הכל (${n(c.all)})`], ['series', `סדרות (${n(c.series)})`], ['movie', `סרטים (${n(c.movie)})`]]
+              .map(([k, l]) => `<button class="tab ${homeFilter === k ? 'active' : ''}" data-f="${k}">${l}</button>`).join('')}
+          </div>
         </div>
-      </div>
-      ${list.length ? `<div class="grid">${list.map(posterCard).join('')}</div>` : '<p class="muted">לא נמצאו תוצאות</p>'}
-    </section>`;
-  $app.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { homeFilter = b.dataset.f; renderHome(); });
+        ${data.total ? '' : '<p class="muted">לא נמצאו תוצאות</p>'}
+        <div class="grid" id="grid">${data.titles.map(posterCard).join('')}</div>
+        <div id="more" ${st.offset < st.total ? '' : 'hidden'}><div class="spinner"></div></div>
+      </section>`;
+    $app.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { homeFilter = b.dataset.f; reload(); });
+    observer?.disconnect();
+    observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMore();
+    }, {rootMargin: '800px'});
+    observer.observe($app.querySelector('#more'));
+  }
+
+  if (!libraryCache) $app.innerHTML = '<div class="spinner"></div>';
+  await reload();
+  const onSearch = () => { clearTimeout(timer); timer = setTimeout(reload, 300); };
+  $search.addEventListener('input', onSearch);
+  cleanup = () => { $search.removeEventListener('input', onSearch); observer?.disconnect(); clearTimeout(timer); };
 }
 
 function contCard(c) {
@@ -152,8 +183,6 @@ let editMode = false;
 async function pageTitle(id) {
   $app.innerHTML = '<div class="spinner"></div>';
   const data = await api(`/api/titles/${id}${editMode ? '?hidden=true' : ''}`);
-  let others = [];
-  if (editMode) others = (await api('/api/library')).titles.filter((t) => t.id !== id);
   const {title: t, media, resume} = data;
   const labels = data.season_labels || {};
   const isSeries = t.kind === 'series';
@@ -195,7 +224,7 @@ async function pageTitle(id) {
         </div>
       </div>
     </section>
-    ${editMode ? editTitlePanel(t, others) : ''}
+    ${editMode ? editTitlePanel(t) : ''}
     ${isSeries && seasons.length > 1 ? `<div class="tabs" style="margin-bottom:16px">
         ${seasons.map((s) => `<button class="tab ${s === season ? 'active' : ''}" data-season="${s}">עונה ${s}${labels[s] ? ' · ' + esc(labels[s]) : ''}</button>`).join('')}
       </div>` : ''}
@@ -278,7 +307,7 @@ function episodeRow(m, isSeries, version, current) {
   </div>`;
 }
 
-function editTitlePanel(t, others) {
+function editTitlePanel(t) {
   return `<div class="panel" id="edit-title">
     <h3>עריכת פרטים</h3>
     <div class="form-grid">
@@ -293,9 +322,8 @@ function editTitlePanel(t, others) {
     <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn primary small" id="save-title">שמור</button>
       <button class="btn small" id="refresh-tmdb">חפש שוב ב-TMDB</button>
-      <select class="input" id="merge-into"><option value="">— איחוד עם... —</option>
-        ${others.map((o) => `<option value="${o.id}">${esc(o.name)} (${o.kind === 'series' ? 'סדרה' : 'סרט'})</option>`).join('')}
-      </select>
+      <input class="input" id="merge-q" placeholder="איחוד עם... (הקלד שם)" style="flex:1;min-width:160px">
+      <select class="input" id="merge-into" hidden></select>
       <button class="btn small" id="merge">אחד</button>
     </div></div>`;
 }
@@ -314,6 +342,20 @@ function bindEditTitle(t) {
   };
   panel.querySelector('#refresh-tmdb').onclick = async () => {
     try { await api(`/api/titles/${t.id}`, {method: 'PATCH', body: {refresh_tmdb: true}}); done(t.id); } catch (e) { alert(e.message); }
+  };
+  const mq = panel.querySelector('#merge-q'), sel = panel.querySelector('#merge-into');
+  let mt = null;
+  mq.oninput = () => {
+    clearTimeout(mt);
+    mt = setTimeout(async () => {
+      const q = mq.value.trim();
+      if (!q) { sel.hidden = true; return; }
+      const res = (await api(`/api/library?q=${encodeURIComponent(q)}&limit=30`)).titles.filter((o) => o.id !== t.id);
+      sel.innerHTML = res.length
+        ? res.map((o) => `<option value="${o.id}">${esc(o.name)} (${o.kind === 'series' ? 'סדרה' : 'סרט'}${o.year ? ', ' + o.year : ''})</option>`).join('')
+        : '<option value="">לא נמצא</option>';
+      sel.hidden = false;
+    }, 300);
   };
   panel.querySelector('#merge').onclick = async () => {
     const into = +panel.querySelector('#merge-into').value;
@@ -519,7 +561,7 @@ async function pageSettings() {
       <p class="muted" style="font-size:13px;margin-bottom:0">כל עוד האתר פועל, הוא סורק לבד ${st.scan_interval_minutes ? `כל ${st.scan_interval_minutes} דקות` : ''} ובכל הפעלה. סריקה מלאה לא מוחקת עריכות שעשית.</p>
     </div>
     <div class="panel"><h3>פוסטרים ותקצירים (רשות)</h3>
-      <p class="muted" style="margin-top:0">${st.tmdb ? '✓ פעיל.' : 'כדי לקבל פוסטרים ותקצירים בעברית, הירשם בחינם ל-<a class="link" href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">TMDB</a>, ואז ב-<a class="link" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">הגדרות ← API</a> העתק את ה-<b>API Key</b>.'}</p>
+      <p class="muted" style="margin-top:0">${st.tmdb ? '✓ פעיל.' + (st.tmdb_status?.running ? ` ⏳ מוריד פוסטרים ותקצירים: ${st.tmdb_status.done.toLocaleString('he-IL')} מתוך ${st.tmdb_status.total.toLocaleString('he-IL')} (ממשיך ברקע)` : '') : 'כדי לקבל פוסטרים ותקצירים בעברית, הירשם בחינם ל-<a class="link" href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">TMDB</a>, ואז ב-<a class="link" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">הגדרות ← API</a> העתק את ה-<b>API Key</b>.'}</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input class="input" id="tmdb-key" dir="ltr" autocomplete="off" placeholder="${st.tmdb ? 'להחלפה: הדבק מפתח חדש' : 'API Key'}" style="flex:1;min-width:180px">
         <button class="btn" id="save-tmdb">שמור</button>

@@ -74,6 +74,9 @@ class Database:
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.version = 0  # bumped on every write; used to cache the library listing
+        self.soft_version = 0  # background poster/overview updates: refresh the cache at most every 20s
+        self._titles_cache: tuple[int, int, float, list[dict]] | None = None
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
@@ -96,10 +99,14 @@ class Database:
         rows = self.q(sql, args)
         return rows[0] if rows else None
 
-    def x(self, sql: str, args: tuple | list = ()) -> int:
+    def x(self, sql: str, args: tuple | list = (), soft: bool = False) -> int:
         with self._lock:
             cur = self.conn.execute(sql, args)
             self.conn.commit()
+            if soft:
+                self.soft_version += 1
+            else:
+                self.version += 1
             return cur.lastrowid
 
     # ------------------------------------------------------------------ chats
@@ -166,25 +173,42 @@ class Database:
             (kind, name, norm_name, year, time.time()),
         )
 
-    def update_title(self, title_id: int, **fields: Any) -> None:
+    def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
         sets = ", ".join(f"{k} = ?" for k in fields)
-        self.x(f"UPDATE titles SET {sets} WHERE id = ?", (*fields.values(), title_id))
+        self.x(f"UPDATE titles SET {sets} WHERE id = ?", (*fields.values(), title_id), soft=soft)
 
     def merge_titles(self, source_id: int, target_id: int) -> None:
         with self._lock:
             self.conn.execute("UPDATE media SET title_id = ? WHERE title_id = ?", (target_id, source_id))
             self.conn.execute("DELETE FROM titles WHERE id = ?", (source_id,))
             self.conn.commit()
+            self.version += 1
 
     def delete_empty_titles(self) -> None:
         self.x("DELETE FROM titles WHERE id NOT IN (SELECT DISTINCT title_id FROM media)")
 
     def titles_needing_tmdb(self) -> list[dict]:
-        return self.q("SELECT * FROM titles WHERE tmdb_checked = 0")
+        """Titles still without TMDB info; ones you watch and newest uploads first."""
+        return self.q(
+            """SELECT t.* FROM titles t
+               LEFT JOIN (SELECT m.title_id, MAX(p.updated_at) AS w, MAX(m.added_at) AS a
+                          FROM media m LEFT JOIN progress p ON p.media_id = m.id GROUP BY m.title_id) x
+                 ON x.title_id = t.id
+               WHERE t.tmdb_checked = 0
+               ORDER BY x.w IS NULL, x.w DESC, x.a DESC"""
+        )
+
+    def library_titles(self) -> list[dict]:
+        """Cached list_titles(): recomputed only after something changed."""
+        c = self._titles_cache
+        if (not c or c[0] != self.version
+                or (c[1] != self.soft_version and time.time() - c[2] > 20)):
+            self._titles_cache = c = (self.version, self.soft_version, time.time(), self.list_titles())
+        return c[3]
 
     def list_titles(self) -> list[dict]:
         return self.q(
@@ -220,6 +244,7 @@ class Database:
                 m,
             )
             self.conn.commit()
+            self.version += 1
             return cur.lastrowid if cur.rowcount else None
 
     def get_media(self, media_id: int) -> dict | None:
