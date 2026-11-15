@@ -58,8 +58,8 @@ Remove-Item $tmp -Recurse -Force
 # 3. Components
 Say "Step 3/4: Installing components"
 $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"   # pip prints notices on stderr
-& $Python -m pip install --upgrade pip --quiet 2>&1 | Out-Null
-& $Python -m pip install -r (Join-Path $Dir "requirements.txt") --quiet
+& $Python -m pip install --upgrade pip --quiet --no-warn-script-location 2>&1 | Out-Null
+& $Python -m pip install -r (Join-Path $Dir "requirements.txt") --quiet --no-warn-script-location
 $ErrorActionPreference = $old
 if ($LASTEXITCODE -ne 0) { Write-Host "Installing components failed (see above)." -ForegroundColor Red; return }
 
