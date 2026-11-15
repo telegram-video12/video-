@@ -765,6 +765,17 @@ async function pageWatch(id) {
 }
 
 // ----------------------------------------------------------------- settings
+function syncLine(sync) {
+  const when = (t) => new Date(t * 1000).toLocaleString('he-IL');
+  const parts = [];
+  if (sync.last) {
+    parts.push(sync.last.ok
+      ? `✓ סונכרן ב-${when(sync.last.t)}: התקבלו ${sync.last.got ?? 0} עדכונים, נשלחו ${sync.last.sent ?? 0}. הסנכרון חוזר לבד כל 5 דקות.`
+      : `<span style="color:var(--red)">✗ ${esc(sync.last.error || 'הסנכרון נכשל')}</span>`);
+  }
+  if (sync.last_from) parts.push(`מכשיר אחר סנכרן איתי ב-${when(sync.last_from.t)}.`);
+  return parts.join('<br>') || (sync.peer ? 'עוד לא סונכרן.' : '');
+}
 function telegramPanel(st) {
   if (st.telegram_authorized) {
     return `<div class="status-line"><span class="status-dot on"></span>
@@ -830,6 +841,17 @@ async function pageSettings() {
         <button class="btn" id="scan-full">סריקה מלאה מההתחלה</button>
       </div>
       <p class="muted" style="font-size:13px;margin-bottom:0">כל עוד האתר פועל, הוא סורק לבד ${st.scan_interval_minutes ? `כל ${st.scan_interval_minutes} דקות` : ''} ובכל הפעלה. סריקה מלאה לא מוחקת עריכות שעשית.</p>
+    </div>
+    <div class="panel"><h3>סנכרון בין מכשירים</h3>
+      <p class="muted" style="margin-top:0">מעביר את ההתקדמות בצפייה בין הפלאפון למחשב, כשהם באותו Wi-Fi. בכל סרט ופרק נשמרת הצפייה האחרונה, לא משנה איפה צפית.</p>
+      ${st.sync.this_device ? `<div class="note" style="margin-bottom:12px">הכתובת של המכשיר הזה: <b dir="ltr">${esc(st.sync.this_device)}</b><br>אותה כותבים במכשיר השני.</div>` : ''}
+      <label class="field">הכתובת של המכשיר השני (המחשב)
+        <input class="input" id="sync-peer" dir="ltr" inputmode="url" placeholder="192.168.1.20:8000" value="${esc(st.sync.peer || '')}">
+      </label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <button class="btn primary" id="sync-now">שמור וסנכרן עכשיו</button>
+      </div>
+      <div id="sync-status" class="muted" style="margin-top:10px;font-size:13px">${syncLine(st.sync)}</div>
     </div>
     <div class="panel"><h3>ניקוי שמות</h3>
       <p class="muted" style="margin-top:0">האתר מזהה לבד חתימות של קבוצות (כמו "קינג סרט") ומוחק אותן משמות הסרטים, כדי שכל סרט יופיע פעם אחת. אם נשארה חתימה, כתוב אותה כאן, <b>שורה לכל ביטוי</b>, והיא תימחק מכל השמות.</p>
@@ -899,6 +921,14 @@ async function pageSettings() {
     if (auth) await api('/api/scan', {method: 'POST', body: {}});
     pageSettings();
   });
+  $('#sync-now').onclick = () => run(async () => {
+    const out = $('#sync-status');
+    await api('/api/settings', {method: 'POST', body: {sync_peer: $('#sync-peer').value}});
+    out.textContent = '⏳ מסנכרן...';
+    const r = await api('/api/sync/now', {method: 'POST'});
+    out.innerHTML = syncLine({peer: r.peer, last: r});
+    libraryCache = null;
+  }, $('#sync-status'));
   $('#save-phrases').onclick = () => run(async () => {
     await api('/api/settings', {method: 'POST', body: {strip_phrases: $('#strip-phrases').value}});
     libraryCache = null;

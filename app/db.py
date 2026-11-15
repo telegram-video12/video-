@@ -462,8 +462,45 @@ class Database:
                    ON CONFLICT(media_id) DO UPDATE SET completed = 1, position = 0, updated_at = excluded.updated_at""",
                 (media_id, time.time()),
             )
-        else:
-            self.x("DELETE FROM progress WHERE media_id = ?", (media_id,))
+        else:  # keep the row (as "not watched", now) so other devices learn about it when syncing
+            self.x("UPDATE progress SET completed = 0, position = 0, updated_at = ? WHERE media_id = ?",
+                   (time.time(), media_id))
+
+    # ---------------------------------------------------------- device sync
+    def export_progress(self) -> list[dict]:
+        """Watch progress keyed by the Telegram message (the same on every device)."""
+        return self.q("""SELECT m.chat_id AS c, m.msg_id AS m, p.position AS pos, p.duration AS dur,
+                                p.completed AS done, p.updated_at AS t
+                         FROM progress p JOIN media m ON m.id = p.media_id""")
+
+    def import_progress(self, rows: list[dict]) -> int:
+        """Merge another device's progress: for each video the most recent change wins."""
+        changed = 0
+        with self._lock:
+            conn = self.conn
+            for r in rows:
+                try:
+                    c, m, t = int(r["c"]), int(r["m"]), float(r["t"])
+                    pos, done = float(r.get("pos") or 0), int(bool(r.get("done")))
+                    dur = float(r["dur"]) if r.get("dur") else None
+                except (KeyError, TypeError, ValueError):
+                    continue
+                media = conn.execute("SELECT id FROM media WHERE chat_id = ? AND msg_id = ?", (c, m)).fetchone()
+                if not media:
+                    continue  # that video was not scanned on this device (yet)
+                mine = conn.execute("SELECT updated_at FROM progress WHERE media_id = ?", (media[0],)).fetchone()
+                if mine and mine[0] >= t:
+                    continue
+                conn.execute(
+                    """INSERT INTO progress (media_id, position, duration, completed, updated_at) VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(media_id) DO UPDATE SET position = excluded.position, duration = excluded.duration,
+                         completed = excluded.completed, updated_at = excluded.updated_at""",
+                    (media[0], pos, dur, done, t))
+                changed += 1
+            conn.commit()
+            if changed:
+                self.version += 1
+        return changed
 
     # ----------------------------------------------------- continue watching
     def resume_point(self, title_id: int) -> dict | None:

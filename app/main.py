@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import socket
+import os
 import unicodedata
 import json
 import hmac
@@ -15,6 +17,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -36,7 +39,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)     # its request log would
 STATIC = Path(__file__).parent / "static"
 COOKIE = "tgv_session"
 SESSION_DAYS = 365
-PUBLIC_PATHS = {"/login", "/api/login", "/api/setup", "/api/setup-state", "/manifest.json"}
+PUBLIC_PATHS = {"/login", "/api/login", "/api/setup", "/api/setup-state", "/manifest.json",
+                "/api/sync/exchange"}  # checks its own key (from the shared site password)
+SYNC_EVERY_SECONDS = 5 * 60
 
 
 class ApiError(Exception):
@@ -476,6 +481,81 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             log.warning("could not reach Telegram: %s", e)
             return {"name": "(אין חיבור כרגע, מתחבר מחדש...)", "username": None}
 
+    # ---------------------------------------------------------- device sync
+    def sync_key() -> str:
+        """Both devices use the same site password (config.json was copied), so they derive the same key."""
+        base = settings.password_hash or settings.env_password
+        return hashlib.sha256(f"tgv-sync:{base}".encode()).hexdigest() if base else ""
+
+    def peer_url(raw: str) -> str:
+        raw = raw.strip().rstrip("/")
+        if not raw:
+            return ""
+        if not re.match(r"https?://", raw):
+            raw = "http://" + raw
+        if not re.search(r":\d+$", raw.split("//", 1)[1]):
+            raw += ":8000"
+        return raw
+
+    def this_device_address() -> str | None:
+        if os.getenv("HOST") != "0.0.0.0":
+            return None  # only this device can open the site (the phone's default)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+                sk.connect(("10.255.255.255", 1))
+                ip = sk.getsockname()[0]
+            return None if ip.startswith("127.") else f"http://{ip}:{os.getenv('PORT', '8000')}"
+        except OSError:
+            return None
+
+    sync_state: dict = {"running": False}
+
+    async def sync_exchange(request: Request):
+        """Called by the OTHER device: take its progress, answer with ours."""
+        key = sync_key()
+        if not key or not hmac.compare_digest(request.headers.get("x-sync-key", ""), key):
+            raise ApiError(403, "מפתח סנכרון שגוי: הסיסמה של האתר צריכה להיות זהה בשני המכשירים")
+        data = await body(request)
+        got = await asyncio.to_thread(db.import_progress, data.get("rows") or [])
+        db.set_pref("sync_last_from", json.dumps({"t": time.time(), "got": got}))
+        return ok({"rows": db.export_progress(), "now": time.time(), "got": got})
+
+    async def run_sync() -> dict:
+        peer = peer_url(db.get_pref("sync_peer"))
+        if not peer or sync_state["running"]:
+            return sync_state
+        sync_state["running"] = True
+        result: dict = {"t": time.time(), "peer": peer}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(peer + "/api/sync/exchange", headers={"x-sync-key": sync_key()},
+                                      json={"rows": db.export_progress()})
+            if r.status_code == 403:
+                raise RuntimeError("הסיסמה של האתר שונה בין המכשירים. הגדר אותה סיסמה בשניהם")
+            r.raise_for_status()
+            answer = r.json()
+            result.update(ok=True, got=await asyncio.to_thread(db.import_progress, answer.get("rows") or []),
+                          sent=answer.get("got", 0))
+        except httpx.HTTPError:
+            result.update(ok=False, error="המכשיר השני לא זמין. ודא שהאתר פועל בו ושאתם באותו Wi-Fi")
+        except Exception as e:  # noqa: BLE001
+            result.update(ok=False, error=str(e))
+        finally:
+            sync_state["running"] = False
+        db.set_pref("sync_last", json.dumps(result, ensure_ascii=False))
+        return result
+
+    async def sync_now(request: Request):
+        if not db.get_pref("sync_peer"):
+            raise ApiError(400, "הזן קודם את הכתובת של המכשיר השני")
+        return ok(await run_sync())
+
+    async def periodic_sync() -> None:
+        while True:
+            await asyncio.sleep(SYNC_EVERY_SECONDS)
+            if db.get_pref("sync_peer"):
+                await run_sync()
+
     async def status(request: Request):
         return ok({
             "telegram_configured": tg.configured,
@@ -488,6 +568,12 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "chats": db.chats(),
             "scan_interval_minutes": settings.scan_interval_minutes,
             "strip_phrases": db.strip_phrases(),
+            "sync": {
+                "peer": db.get_pref("sync_peer"),
+                "this_device": this_device_address(),
+                "last": json.loads(db.get_pref("sync_last") or "null"),
+                "last_from": json.loads(db.get_pref("sync_last_from") or "null"),
+            },
         })
 
     async def save_settings(request: Request):
@@ -501,6 +587,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if key:  # look up titles that were added before the key existed
                 db.x("UPDATE titles SET tmdb_checked = 0 WHERE tmdb_id IS NULL")
                 scanner.start_tmdb()
+        if "sync_peer" in payload:
+            db.set_pref("sync_peer", peer_url(str(payload["sync_peer"] or "")))
         if "strip_phrases" in payload:
             raw = str(payload["strip_phrases"] or "")
             phrases = [p.strip() for p in re.split(r"[\n,]+", raw) if p.strip()]
@@ -634,9 +722,11 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         except Exception:  # noqa: BLE001 - site still works for browsing the library
             log.exception("could not connect to Telegram")
         task = asyncio.create_task(periodic_scan()) if settings.scan_interval_minutes > 0 else None
+        syncer = asyncio.create_task(periodic_sync())
         jobs = asyncio.create_task(startup_jobs())
         yield
         jobs.cancel()
+        syncer.cancel()
         if task:
             task.cancel()
         await tg.stop()
@@ -679,6 +769,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/tg/logout", tg_logout, methods=["POST"]),
         R("/api/dialogs", dialogs), R("/api/chats", set_chats, methods=["POST"]),
         R("/api/scan", start_scan, methods=["POST"]),
+        R("/api/sync/exchange", sync_exchange, methods=["POST"]), R("/api/sync/now", sync_now, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={ApiError: api_error, Exception: server_error})

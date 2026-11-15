@@ -627,3 +627,39 @@ def test_send_code_twice_goes_to_code_step(client):
     tg.send_code = send_code
     r = client.post("/api/tg/send-code", json={"phone": "050-123 4567"}).json()
     assert r["ok"] and r["already_sent"] is True
+
+
+def test_device_sync_exchange(client, tmp_path):
+    import hashlib
+    from app.db import Database
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "פאודה עונה 1 פרק 1")), (2, vm(2, "פאודה עונה 1 פרק 2")), (3, vm(3, "שרק (2001)"))]
+    scan(client)
+    db = client.app.state.db
+    ids = {r["msg_id"]: r["id"] for r in db.q("SELECT id, msg_id FROM media")}
+    client.post(f"/api/progress/{ids[1]}", json={"position": 600, "duration": 1500})
+    # the other device: its own database with the same videos (different row ids) and newer progress
+    other = Database(tmp_path / "other.db")
+    t = other.get_or_create_title("series", "פאודה", "פאודה", None)
+    for mid, msg in ((50, 1), (51, 2)):
+        other.x("INSERT INTO media (id, chat_id, msg_id, title_id, size, added_at, season, episode) VALUES (?, -100, ?, ?, 1, 0, 1, ?)",
+                (mid, msg, t, msg))
+    other.save_progress(50, 1450, 1500)          # finished episode 1 there, later
+    other.save_progress(51, 300, 1500)           # and started episode 2
+    # wrong key is refused
+    assert client.post("/api/sync/exchange", json={"rows": []}, headers={"x-sync-key": "nope"}).status_code == 403
+    key = hashlib.sha256(f"tgv-sync:{client.app.state.settings.password_hash}".encode()).hexdigest()
+    r = client.post("/api/sync/exchange", json={"rows": other.export_progress()}, headers={"x-sync-key": key})
+    assert r.status_code == 200
+    mine = {p["m"]: p for p in r.json()["rows"]}
+    assert mine[1]["done"] == 1 and mine[2]["pos"] == 300   # merged here: newest wins
+    # and the answer brings this device's progress back to the other one
+    assert other.import_progress(r.json()["rows"]) == 0     # nothing newer here
+    # un-watching on one device reaches the other
+    client.post(f"/api/watched/{ids[1]}", json={"watched": False})
+    assert other.import_progress(db.export_progress()) >= 1
+    assert other.q1("SELECT completed FROM progress WHERE media_id = 50")["completed"] == 0
+    # settings: peer address is normalised and shown
+    client.post("/api/settings", json={"sync_peer": "192.168.1.20"})
+    assert client.get("/api/status").json()["sync"]["peer"] == "http://192.168.1.20:8000"
