@@ -593,7 +593,7 @@ def test_tmdb_details_genres_rating_cast_and_season_marking(client, monkeypatch)
     assert sorted(lib("genres=אנימציה")) == sorted(["שרק", "נארוטו"])
     assert lib("kind=movie&genres=אקשן,קומדיה&sort=rating") == ["התחלה", "שרק"]
     assert lib("q=shrek") == ["שרק"]                                  # original (English) name finds it
-    g = {x["name"]: x["count"] for x in client.get("/api/genres?kind=movie").json()}
+    g = {x["name"]: x["count"] for x in client.get("/api/genres?kind=movie").json()["genres"]}
     assert g["אקשן"] == 1 and g["אנימציה"] == 1 and "מדע בדיוני" in g
     naruto = next(t for t in client.get("/api/library?kind=series").json()["titles"])
     detail = client.get(f"/api/titles/{naruto['id']}").json()

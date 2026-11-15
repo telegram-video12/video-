@@ -255,7 +255,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                 continue
             for g in t["genres"]:
                 counts[g] = counts.get(g, 0) + 1
-        return ok([{"name": g, "count": n} for g, n in sorted(counts.items(), key=lambda x: -x[1])])
+        st = scanner.tmdb.status if scanner.tmdb else None
+        return ok({"genres": [{"name": g, "count": n} for g, n in sorted(counts.items(), key=lambda x: -x[1])],
+                   "loading": st if st and st.get("running") else None})
 
     async def watched_many(request: Request):
         """Mark several episodes at once (a whole season, or 'up to here'). Returns their previous state for undo."""

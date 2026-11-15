@@ -155,7 +155,7 @@ const store = {  // localStorage can be missing (private mode): never let it bre
 const DECADES = [['', 'כל השנים'], ['2020', '2020 ומעלה'], ['2010', '2010–2019'], ['2000', '2000–2009'], ['1990', '1990–1999'], ['old', 'לפני 1990']];
 const SORTS = [['added', 'נוסף לאחרונה'], ['watched', 'נצפה לאחרונה'], ['name', 'א–ת'], ['year', 'שנה (חדש קודם)'], ['rating', 'דירוג (גבוה קודם)']];
 
-function multiSheet(title, options, chosen) {
+function multiSheet(title, options, chosen, note = '') {
   // options: [[value, label]]; returns the new list, or null when closed without "החל"
   return new Promise((resolve) => {
     const picked = new Set(chosen);
@@ -163,6 +163,7 @@ function multiSheet(title, options, chosen) {
     el.className = 'sheet-wrap';
     el.innerHTML = `<div class="sheet"><div class="sheet-grip"></div>
       <div class="sheet-head"><h3>${esc(title)}</h3><button class="linkbtn" data-clear>נקה</button></div>
+      ${note ? `<p class="sheet-note">${note}</p>` : ''}
       <div class="sheet-list">${options.map(([v, l]) => `<button class="sheet-opt ${picked.has(v) ? 'on' : ''}" data-v="${esc(v)}">${esc(l)}<span class="tick">${picked.has(v) ? '✓' : ''}</span></button>`).join('')}</div>
       <button class="btn primary wide" data-apply>החל</button></div>`;
     const close = (v) => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); resolve(v); };
@@ -263,9 +264,10 @@ async function pageList(kind, st) {
   function bind() {
     $app.querySelectorAll('[data-state]').forEach((b) => b.onclick = () => { f.state = b.dataset.state; changed(); });
     $app.querySelector('[data-pick=genre]').onclick = async () => {
-      const list = await api(`/api/genres?kind=${kind}`);
+      const {genres: list, loading} = await api(`/api/genres?kind=${kind}`);
+      const note = loading ? `⏳ הז'אנרים עדיין נטענים מ-TMDB (${n(loading.done)} מתוך ${n(loading.total)}). המספרים יגדלו בהדרגה.` : '';
       if (!list.length) { alert("עדיין אין ז'אנרים. הם מגיעים מ-TMDB, תוך כדי הורדת הפוסטרים."); return; }
-      const v = await multiSheet("ז'אנר", list.map((g) => [g.name, `${g.name} (${n(g.count)})`]), f.genres);
+      const v = await multiSheet("ז'אנר", list.map((g) => [g.name, `${g.name} (${n(g.count)})`]), f.genres, note);
       if (v !== null) { f.genres = v; changed(); }
     };
     $app.querySelector('[data-pick=decade]').onclick = async () => {
