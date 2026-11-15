@@ -2,21 +2,24 @@
 <html lang="he" dir="rtl">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0e1015">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0b0f">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="/static/icon-192.png">
   <title>הספרייה שלי</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="logo" href="#/"><span class="dot"></span> הספרייה שלי</a>
-    <input class="search" id="search" type="search" placeholder="חיפוש סדרה או סרט...">
-    <span class="spacer"></span>
-    <a class="icon-btn" href="#/settings">⚙ הגדרות</a>
-  </header>
   <main id="app"><div class="spinner"></div></main>
+  <nav id="tabbar" class="tabbar">
+    <a href="#/" data-tab="home"><span class="ti">🏠</span>בית</a>
+    <a href="#/series" data-tab="series"><span class="ti">📺</span>סדרות</a>
+    <a href="#/movies" data-tab="movies"><span class="ti">🎬</span>סרטים</a>
+    <a href="#/mylist" data-tab="mylist"><span class="ti">⭐</span>הרשימה שלי</a>
+    <a href="#/more" data-tab="more"><span class="ti">⚙️</span>עוד</a>
+  </nav>
   <script src="/static/app.js"></script>
 </body>
 </html>

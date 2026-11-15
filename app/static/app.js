@@ -2,7 +2,7 @@
 'use strict';
 
 const $app = document.getElementById('app');
-const $search = document.getElementById('search');
+const $tabbar = document.getElementById('tabbar');
 let cleanup = null;          // called when leaving the current page
 let libraryCache = null;
 
@@ -48,99 +48,174 @@ async function api(path, opts = {}) {
 function errorBox(e) { return `<div class="error-box">${esc(e.message || e)}</div>`; }
 
 // ------------------------------------------------------------------- router
+// Every page remembers how far you scrolled and how much was loaded, so "back" lands where you were.
+const pageState = {};
+const TAB_OF = {'': 'home', series: 'series', movies: 'movies', search: 'home', mylist: 'mylist', more: 'more', settings: 'more'};
+let lastTab = 'home';
+
 async function route() {
+  const prev = route.current;
+  if (prev && pageState[prev]) pageState[prev].scrollY = window.scrollY;
   if (cleanup) { try { cleanup(); } catch (_) {} cleanup = null; }
   const hash = location.hash.replace(/^#/, '') || '/';
+  route.current = hash;
   const [path] = hash.split('?');
   const parts = path.split('/').filter(Boolean);
+  const first = parts[0] || '';
+  // tab bar: hidden in the player; inner pages (title) keep the tab you came from
+  const tab = TAB_OF[first] ?? lastTab;
+  lastTab = tab;
+  $tabbar.hidden = first === 'watch';
+  $tabbar.querySelectorAll('a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
+  document.body.classList.toggle('in-player', first === 'watch');
+  const st = pageState[hash] || (pageState[hash] = {});
   window.scrollTo(0, 0);
-  $search.style.display = parts.length === 0 ? '' : 'none';
   try {
-    if (parts[0] === 'title') await pageTitle(+parts[1]);
-    else if (parts[0] === 'watch') await pageWatch(+parts[1]);
-    else if (parts[0] === 'settings') await pageSettings();
+    if (first === 'title') await pageTitle(+parts[1]);
+    else if (first === 'watch') await pageWatch(+parts[1]);
+    else if (first === 'more' || first === 'settings') await pageSettings();
+    else if (first === 'series') await pageList('series', st);
+    else if (first === 'movies') await pageList('movie', st);
+    else if (first === 'search') await pageSearch(st);
+    else if (first === 'mylist') await pageMyList();
     else await pageHome();
+    if (st.scrollY) requestAnimationFrame(() => window.scrollTo(0, st.scrollY));
   } catch (e) {
     if (e.message !== 'login') $app.innerHTML = errorBox(e);
   }
 }
 window.addEventListener('hashchange', route);
+// tapping the tab you are already on scrolls back to the top
+$tabbar.addEventListener('click', (e) => {
+  const a = e.target.closest('a');
+  if (a && a.getAttribute('href') === (location.hash || '#/')) { e.preventDefault(); window.scrollTo({top: 0, behavior: 'smooth'}); }
+});
 
-// --------------------------------------------------------------------- home
-// The library can hold tens of thousands of titles, so it is loaded page by page while scrolling.
-let homeFilter = 'all';
+function pageHeader(title, sub = '', {logo = false} = {}) {
+  return `<header class="phead">
+    <div class="phead-title">${logo ? '<span class="logo"><i></i>הספרייה שלי</span>' : `<h1>${esc(title)}</h1>${sub ? `<div class="phead-sub">${sub}</div>` : ''}`}</div>
+    <a class="iconbtn" href="#/search" aria-label="חיפוש">🔍</a>
+  </header>`;
+}
+
+function emptyLibrary() {
+  return `<div class="empty"><h2>הספרייה עדיין ריקה</h2>
+    <p>בחר את קבוצות הטלגרם שמהן ייאספו הסדרות והסרטים, והפעל סריקה.</p>
+    <a class="btn primary" href="#/more">להגדרות</a></div>`;
+}
+
 const PAGE = 60;
+const n = (x) => Number(x || 0).toLocaleString('he-IL');
 
+// ---------------------------------------------------------------------- home
 async function pageHome() {
-  const st = {offset: 0, total: 0, loading: false, token: 0};
-  let observer = null, timer = null;
+  if (!libraryCache) $app.innerHTML = pageHeader('', '', {logo: true}) + skeletonRows();
+  const [all, series, movies] = await Promise.all([
+    api('/api/library?limit=20'),
+    api('/api/library?kind=series&limit=20'),
+    api('/api/library?kind=movie&limit=20'),
+  ]);
+  libraryCache = all;
+  if (!all.counts.all) { $app.innerHTML = pageHeader('', '', {logo: true}) + emptyLibrary(); return; }
+  const cont = all.continue || [];
+  $app.innerHTML = pageHeader('', '', {logo: true}) +
+    (cont.length ? rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`) : '') +
+    (series.titles.length ? rowSection('סדרות שנוספו לאחרונה', '#/series', `<div class="hrow">${series.titles.map(posterCard).join('')}</div>`) : '') +
+    (movies.titles.length ? rowSection('סרטים שנוספו לאחרונה', '#/movies', `<div class="hrow">${movies.titles.map(posterCard).join('')}</div>`) : '');
+}
 
-  const url = (offset) => `/api/library?kind=${homeFilter}&offset=${offset}&limit=${PAGE}&q=${encodeURIComponent($search.value.trim())}`;
+function rowSection(title, more, body) {
+  return `<section class="rsec"><div class="rsec-head"><h2>${esc(title)}</h2>${more ? `<a href="${more}">הכל ›</a>` : ''}</div>${body}</section>`;
+}
 
-  async function loadMore() {
-    if (st.loading || st.offset >= st.total) return;
-    st.loading = true;
-    const token = st.token;
+function skeletonRows() {
+  const cards = Array.from({length: 4}, () => '<div class="poster-card"><div class="poster sk"></div></div>').join('');
+  return [1, 2].map(() => `<section class="rsec"><div class="rsec-head"><h2 class="sk sk-text"></h2></div><div class="hrow">${cards}</div></section>`).join('');
+}
+function skeletonGrid() {
+  return `<div class="pgrid">${Array.from({length: 9}, () => '<div class="poster-card"><div class="poster sk"></div></div>').join('')}</div>`;
+}
+
+// ------------------------------------------------------------ series / movies
+async function pageList(kind, st) {
+  const isSeries = kind === 'series';
+  const title = isSeries ? 'סדרות' : 'סרטים';
+  $app.innerHTML = pageHeader(title) + skeletonGrid();
+  const want = Math.max(PAGE, st.loaded || 0);  // coming back: load as much as before
+  const data = await api(`/api/library?kind=${kind}&offset=0&limit=${Math.min(200, want)}`);
+  let titles = data.titles;
+  while (titles.length < want && titles.length < data.total) {
+    const more = await api(`/api/library?kind=${kind}&offset=${titles.length}&limit=200`);
+    if (!more.titles.length) break;
+    titles = titles.concat(more.titles);
+  }
+  if (!data.counts.all) { $app.innerHTML = pageHeader(title) + emptyLibrary(); return; }
+  $app.innerHTML = pageHeader(title, `${n(data.total)} ${title} בספרייה`) +
+    `<div class="pgrid" id="grid">${titles.map(posterCard).join('')}</div>
+     <div id="more" ${titles.length < data.total ? '' : 'hidden'}><div class="spinner"></div></div>`;
+  st.loaded = titles.length;
+  cleanup = infiniteScroll(async () => {
+    if (st.loaded >= data.total) return false;
+    const more = await api(`/api/library?kind=${kind}&offset=${st.loaded}&limit=${PAGE}`);
+    $app.querySelector('#grid').insertAdjacentHTML('beforeend', more.titles.map(posterCard).join(''));
+    st.loaded += more.titles.length;
+    return more.titles.length > 0 && st.loaded < data.total;
+  });
+}
+
+function infiniteScroll(loadMore) {
+  const sentinel = $app.querySelector('#more');
+  if (!sentinel || sentinel.hidden) return null;
+  let busy = false;
+  const obs = new IntersectionObserver(async (entries) => {
+    if (busy || !entries.some((e) => e.isIntersecting)) return;
+    busy = true;
     try {
-      const data = await api(url(st.offset));
-      if (token !== st.token) return;  // a newer search started meanwhile
-      $app.querySelector('#grid').insertAdjacentHTML('beforeend', data.titles.map(posterCard).join(''));
-      st.offset += data.titles.length;
-    } finally {
-      st.loading = false;
-    }
-    if (st.offset >= st.total) $app.querySelector('#more').hidden = true;
-  }
+      if (!(await loadMore())) { sentinel.hidden = true; obs.disconnect(); }
+    } finally { busy = false; }
+  }, {rootMargin: '900px'});
+  obs.observe(sentinel);
+  return () => obs.disconnect();
+}
 
-  async function reload() {
-    st.token += 1;
-    const token = st.token;
-    const q = $search.value.trim();
-    const data = await api(url(0));
-    if (token !== st.token) return;
-    libraryCache = data;
-    st.offset = data.titles.length;
-    st.total = data.total;
-    const c = data.counts;
-    if (!c.all && !q) {
-      $app.innerHTML = `<div class="empty">
-        <h2>הספרייה עדיין ריקה</h2>
-        <p>בחר את קבוצות הטלגרם שמהן ייאספו הסדרות והסרטים, והפעל סריקה.</p>
-        <a class="btn primary" href="#/settings">להגדרות</a></div>`;
-      return;
-    }
-    const cont = data.continue || [];
-    const n = (x) => x.toLocaleString('he-IL');
-    $app.innerHTML = `${!q && cont.length ? `
-      <section class="section">
-        <div class="section-head"><h2>המשך צפייה</h2></div>
-        <div class="row">${cont.map(contCard).join('')}</div>
-      </section>` : ''}
-      <section class="section">
-        <div class="section-head">
-          <h2>${q ? `תוצאות עבור "${esc(q)}"` : 'כל הספרייה'}</h2>
-          <div class="tabs">
-            ${[['all', `הכל (${n(c.all)})`], ['series', `סדרות (${n(c.series)})`], ['movie', `סרטים (${n(c.movie)})`]]
-              .map(([k, l]) => `<button class="tab ${homeFilter === k ? 'active' : ''}" data-f="${k}">${l}</button>`).join('')}
-          </div>
-        </div>
-        ${data.total ? '' : '<p class="muted">לא נמצאו תוצאות</p>'}
-        <div class="grid" id="grid">${data.titles.map(posterCard).join('')}</div>
-        <div id="more" ${st.offset < st.total ? '' : 'hidden'}><div class="spinner"></div></div>
-      </section>`;
-    $app.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { homeFilter = b.dataset.f; reload(); });
-    observer?.disconnect();
-    observer = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) loadMore();
-    }, {rootMargin: '800px'});
-    observer.observe($app.querySelector('#more'));
-  }
+// -------------------------------------------------------------------- search
+async function pageSearch(st) {
+  $app.innerHTML = `<header class="phead"><div class="searchbox">
+      <span>🔍</span><input id="q" type="search" placeholder="חיפוש סדרה או סרט..." value="${esc(st.q || '')}" autocomplete="off">
+    </div><a class="iconbtn" href="javascript:history.back()" aria-label="חזרה">✕</a></header>
+    <div id="results"></div>`;
+  const input = $app.querySelector('#q'), out = $app.querySelector('#results');
+  let timer = null, token = 0;
+  const run = async () => {
+    const q = input.value.trim();
+    st.q = q;
+    const my = ++token;
+    if (!q) { out.innerHTML = '<p class="muted center">הקלד שם של סדרה או סרט</p>'; return; }
+    out.innerHTML = skeletonGrid();
+    const [s, m] = await Promise.all([
+      api(`/api/library?kind=series&limit=30&q=${encodeURIComponent(q)}`),
+      api(`/api/library?kind=movie&limit=30&q=${encodeURIComponent(q)}`),
+    ]);
+    if (my !== token) return;
+    if (!s.total && !m.total) { out.innerHTML = `<p class="muted center">לא נמצא "${esc(q)}" בספרייה</p>`; return; }
+    out.innerHTML =
+      (s.total ? rowSection(`סדרות (${n(s.total)})`, '', `<div class="pgrid">${s.titles.map(posterCard).join('')}</div>`) : '') +
+      (m.total ? rowSection(`סרטים (${n(m.total)})`, '', `<div class="pgrid">${m.titles.map(posterCard).join('')}</div>`) : '');
+  };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 300); });
+  run();
+  if (!st.q) setTimeout(() => input.focus(), 50);
+  cleanup = () => clearTimeout(timer);
+}
 
-  if (!libraryCache) $app.innerHTML = '<div class="spinner"></div>';
-  await reload();
-  const onSearch = () => { clearTimeout(timer); timer = setTimeout(reload, 300); };
-  $search.addEventListener('input', onSearch);
-  cleanup = () => { $search.removeEventListener('input', onSearch); observer?.disconnect(); clearTimeout(timer); };
+// ------------------------------------------------------------------- my list
+async function pageMyList() {
+  $app.innerHTML = pageHeader('הרשימה שלי') + skeletonRows();
+  const data = await api('/api/library?limit=1');
+  const cont = data.continue || [];
+  $app.innerHTML = pageHeader('הרשימה שלי') +
+    `<div class="note">בקרוב כאן: <b>לצפות בהמשך</b>, <b>היסטוריה</b> ו<b>סטטיסטיקה</b>.</div>` +
+    (cont.length ? rowSection('באמצע לצפות', '', `<div class="vlist">${cont.map(contCard).join('')}</div>`) : '');
 }
 
 function contCard(c) {
@@ -206,6 +281,7 @@ async function pageTitle(id) {
 
   $app.innerHTML = `
     <section class="hero" ${bg(t.backdrop)}>
+      <a class="iconbtn hero-back" href="javascript:history.back()" aria-label="חזרה">→</a>
       <div class="hero-inner">
         <div class="poster-img"><div class="ph">${esc(t.name)}</div>${img(t.poster)}</div>
         <div>
@@ -546,7 +622,7 @@ async function pageSettings() {
   const auth = st.telegram_authorized;
 
   $app.innerHTML = `
-    <h1 style="margin-bottom:20px">הגדרות</h1>
+    ${pageHeader("עוד", "הגדרות, חיבורים וקבוצות")}
     <div class="panel"><h3>חיבור לטלגרם</h3>${telegramPanel(st)}</div>
     <div class="panel" ${auth ? '' : 'hidden'}><h3>קבוצות וערוצים</h3>
       <p class="muted" style="margin-top:0">סמן את הקבוצות שמהן ייאספו הסדרות והסרטים.</p>
