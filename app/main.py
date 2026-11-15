@@ -20,7 +20,7 @@ from pathlib import Path
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -165,11 +165,20 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         return ok()
 
     # ----------------------------------------------------------------- pages
+    def page(name: str) -> HTMLResponse:
+        """Serve a page whose CSS/JS links carry the files' version, so after an update the browser
+        always loads the new design instead of an old copy from its cache."""
+        html = (STATIC / name).read_text(encoding="utf-8")
+        for asset in ("style.css", "app.js"):
+            stamp = int((STATIC / asset).stat().st_mtime)
+            html = html.replace(f"/static/{asset}", f"/static/{asset}?v={stamp}")
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
     async def login_page(request: Request):
-        return FileResponse(STATIC / "login.html")
+        return page("login.html")
 
     async def index(request: Request):
-        return FileResponse(STATIC / "index.html")
+        return page("index.html")
 
     async def manifest(request: Request):
         return FileResponse(STATIC / "manifest.json", media_type="application/manifest+json")
