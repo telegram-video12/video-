@@ -930,13 +930,16 @@ async function pageWatch(id) {
   const togglePlay = () => { if (v.paused) v.play().catch(() => {}); else v.pause(); };
 
   // ---- show / hide the controls
+  // phone/touch: the controls stay until you tap the picture again; computer: they hide after 3 s without the mouse
+  let touchMode = matchMedia('(hover: none)').matches;
+  wrap.addEventListener('pointerdown', (e) => { touchMode = e.pointerType !== 'mouse'; }, true);
   const showUI = () => {
     wrap.classList.add('show-ui');
     clearTimeout(hideTimer);
-    if (!v.paused) hideTimer = setTimeout(() => wrap.classList.remove('show-ui'), 3000);
+    if (!v.paused && !touchMode) hideTimer = setTimeout(() => wrap.classList.remove('show-ui'), 3000);
   };
-  wrap.addEventListener('mousemove', showUI);
-  wrap.addEventListener('mouseleave', () => { if (!v.paused) wrap.classList.remove('show-ui'); });
+  wrap.addEventListener('mousemove', () => { if (!touchMode) showUI(); });  // phones send a fake mouse move with every tap
+  wrap.addEventListener('mouseleave', () => { if (!v.paused && !touchMode) wrap.classList.remove('show-ui'); });
 
   // tap/click on the picture: computer = play/pause, phone = show controls; double = ±10 s (sides) or full screen
   let lastTap = 0, tapTimer = null;
