@@ -243,6 +243,7 @@ class Scanner:
                         if count % 200 == 0:
                             self.db.set_chat_scanned(chat["id"], last_seen)
                     self.db.set_chat_scanned(chat["id"], last_seen)
+                    log.info("scanned chat %s: %d messages checked", chat["id"], count)
                 if self.tmdb:
                     self.status["chat"] = "TMDB"
                     await self.tmdb.enrich_pending(self.db)
@@ -250,6 +251,7 @@ class Scanner:
                 log.exception("scan failed")
                 self.status["error"] = str(e)
             finally:
+                log.info("scan finished, %d new videos added", self.status["added"])
                 self.status["running"] = False
                 self.status["chat"] = None
                 self.status["last_finished"] = time.time()
