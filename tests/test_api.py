@@ -237,3 +237,40 @@ def test_dialogs_and_status(client):
     assert client.get("/api/dialogs").json()[0]["enabled"] is True
     st = client.get("/api/status").json()
     assert st["telegram_authorized"] and st["chats"][0]["id"] == -100
+
+
+def test_season_per_channel(client):
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [(1, vm(1, "וואן פיס פרק 1")), (2, vm(2, "וואן פיס פרק 2"))]
+    scan(client)
+    # second channel = second saga, captions say nothing about a season
+    second = [(10, VideoMessage(-200, 10, "וואן פיס פרק 62", "", len(FILE), "video/mp4", 1500, 0, 0, 2000)),
+              (11, VideoMessage(-200, 11, "וואן פיס עונה 5 פרק 63", "", len(FILE), "video/mp4", 1500, 0, 0, 2001))]
+
+    async def iter_messages(chat_id, min_id=0):
+        for mid, v in (second if chat_id == -200 else tg.messages):
+            if mid > min_id:
+                yield mid, v
+    tg.iter_messages = iter_messages
+    client.post("/api/chats", json={"chats": [{"id": -200, "title": "סאגת אלבסטה", "enabled": True}]})
+    import asyncio
+    asyncio.run(client.app.state.scanner.scan())
+    tid = client.get("/api/library").json()["titles"][0]["id"]
+    seasons = lambda: [(m["season"], m["episode"]) for m in client.get(f"/api/titles/{tid}").json()["media"]]
+    assert seasons() == [(1, 1), (1, 2), (1, 62), (5, 63)]
+    # assign season 2 to the second channel -> existing episodes move, explicit "עונה 5" stays
+    client.post("/api/chats", json={"chats": [
+        {"id": -100, "title": "איסט בלו", "enabled": True, "season": "1", "season_label": "איסט בלו"},
+        {"id": -200, "title": "סאגת אלבסטה", "enabled": True, "season": "2", "season_label": "אלבסטה"}]})
+    assert seasons() == [(1, 1), (1, 2), (2, 62), (5, 63)]
+    labels = client.get(f"/api/titles/{tid}").json()["season_labels"]
+    assert labels == {"1": "איסט בלו", "2": "אלבסטה"}
+    d = {x["id"]: x for x in client.get("/api/dialogs").json()}
+    # new episodes from that channel also get season 2
+    second.append((12, VideoMessage(-200, 12, "וואן פיס פרק 64", "", len(FILE), "video/mp4", 1500, 0, 0, 2002)))
+    asyncio.run(client.app.state.scanner.scan())
+    assert (2, 64) in seasons()
+    # clearing the season puts them back to automatic
+    client.post("/api/chats", json={"chats": [{"id": -200, "title": "סאגת אלבסטה", "enabled": True, "season": ""}]})
+    assert (1, 62) in seasons() and (1, 64) in seasons()

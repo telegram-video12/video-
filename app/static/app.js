@@ -155,6 +155,7 @@ async function pageTitle(id) {
   let others = [];
   if (editMode) others = (await api('/api/library')).titles.filter((t) => t.id !== id);
   const {title: t, media, resume} = data;
+  const labels = data.season_labels || {};
   const isSeries = t.kind === 'series';
 
   const seasons = [...new Set(media.map((m) => m.season ?? 1))].sort((a, b) => a - b);
@@ -196,7 +197,7 @@ async function pageTitle(id) {
     </section>
     ${editMode ? editTitlePanel(t, others) : ''}
     ${isSeries && seasons.length > 1 ? `<div class="tabs" style="margin-bottom:16px">
-        ${seasons.map((s) => `<button class="tab ${s === season ? 'active' : ''}" data-season="${s}">עונה ${s}</button>`).join('')}
+        ${seasons.map((s) => `<button class="tab ${s === season ? 'active' : ''}" data-season="${s}">עונה ${s}${labels[s] ? ' · ' + esc(labels[s]) : ''}</button>`).join('')}
       </div>` : ''}
     <div class="episodes" id="eps"></div>`;
 
@@ -618,21 +619,36 @@ async function pageSettings() {
     dialogs.sort((a, b) => (b.enabled - a.enabled) || a.title.localeCompare(b.title, 'he'));
     box.innerHTML = `
       <input class="input" id="chat-filter" placeholder="חיפוש קבוצה..." style="width:100%">
+      <p class="muted" style="font-size:13px">💡 אם כל ערוץ הוא עונה אחרת של אותה סדרה (למשל ערוץ לכל סאגה), כתוב ליד כל ערוץ מסומן את מספר העונה שלו. אפשר גם לתת שם לעונה.</p>
       <div class="chat-list">${dialogs.map((d) => `
-        <label class="chat-item" data-name="${esc(d.title.toLowerCase())}">
-          <input type="checkbox" data-id="${d.id}" data-title="${esc(d.title)}" ${d.enabled ? 'checked' : ''}>
-          <span style="flex:1">${esc(d.title)}</span>
-          <span class="badge">${d.type === 'channel' ? 'ערוץ' : 'קבוצה'}</span>
-        </label>`).join('')}</div>
+        <div class="chat-item ${d.enabled ? 'on' : ''}" data-name="${esc(d.title.toLowerCase())}" data-id="${d.id}" data-title="${esc(d.title)}">
+          <label class="chat-main">
+            <input type="checkbox" ${d.enabled ? 'checked' : ''}>
+            <span style="flex:1">${esc(d.title)}</span>
+            <span class="badge">${d.type === 'channel' ? 'ערוץ' : 'קבוצה'}</span>
+          </label>
+          <div class="chat-season">
+            <label>עונה <input class="input num" name="season" inputmode="numeric" placeholder="אוטו׳" value="${d.season ?? ''}"></label>
+            <input class="input" name="season_label" placeholder="שם העונה (רשות), למשל: איסט בלו" value="${esc(d.season_label || '')}">
+          </div>
+        </div>`).join('')}</div>
       <button class="btn primary" id="save-chats">שמור וסרוק</button>`;
+    box.querySelectorAll('.chat-item input[type=checkbox]').forEach((cb) => cb.onchange = () => {
+      cb.closest('.chat-item').classList.toggle('on', cb.checked);
+    });
     box.querySelector('#chat-filter').oninput = (e) => {
       const q = e.target.value.trim().toLowerCase();
       box.querySelectorAll('.chat-item').forEach((el) => { el.style.display = el.dataset.name.includes(q) ? '' : 'none'; });
     };
     box.querySelector('#save-chats').onclick = async () => {
-      const chats = [...box.querySelectorAll('input[type=checkbox]')]
-        .filter((c) => c.checked || dialogs.find((d) => String(d.id) === c.dataset.id)?.enabled)
-        .map((c) => ({id: c.dataset.id, title: c.dataset.title, enabled: c.checked}));
+      const chats = [...box.querySelectorAll('.chat-item')]
+        .filter((el) => el.querySelector('input[type=checkbox]').checked || dialogs.find((d) => String(d.id) === el.dataset.id)?.enabled)
+        .map((el) => ({
+          id: el.dataset.id, title: el.dataset.title,
+          enabled: el.querySelector('input[type=checkbox]').checked,
+          season: el.querySelector('[name=season]').value.trim(),
+          season_label: el.querySelector('[name=season_label]').value.trim(),
+        }));
       try {
         await api('/api/chats', {method: 'POST', body: {chats}});
         await doScan(false);

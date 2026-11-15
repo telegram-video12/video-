@@ -72,7 +72,15 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(chats)")}
+        if "default_season" not in cols:
+            self.conn.execute("ALTER TABLE chats ADD COLUMN default_season INTEGER")
+        if "season_label" not in cols:
+            self.conn.execute("ALTER TABLE chats ADD COLUMN season_label TEXT")
 
     # ---------------------------------------------------------------- helpers
     def q(self, sql: str, args: tuple | list = ()) -> list[dict[str, Any]]:
@@ -90,12 +98,45 @@ class Database:
             return cur.lastrowid
 
     # ------------------------------------------------------------------ chats
-    def upsert_chat(self, chat_id: int, title: str, enabled: bool) -> None:
+    def upsert_chat(self, chat_id: int, title: str, enabled: bool,
+                    default_season: int | None = None, season_label: str | None = None) -> None:
         self.x(
-            """INSERT INTO chats (id, title, enabled) VALUES (?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET title = excluded.title, enabled = excluded.enabled""",
-            (chat_id, title, int(enabled)),
+            """INSERT INTO chats (id, title, enabled, default_season, season_label) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET title = excluded.title, enabled = excluded.enabled,
+                 default_season = excluded.default_season, season_label = excluded.season_label""",
+            (chat_id, title, int(enabled), default_season, season_label or None),
         )
+
+    def get_chat(self, chat_id: int) -> dict | None:
+        return self.q1("SELECT * FROM chats WHERE id = ?", (chat_id,))
+
+    def apply_chat_season(self, chat_id: int) -> int:
+        """Re-assign seasons of already-scanned episodes from this chat whose text named no season."""
+        from .parser import parse_media
+
+        chat = self.get_chat(chat_id)
+        if not chat:
+            return 0
+        changed = 0
+        for m in self.q("SELECT id, caption, file_name, season, episode FROM media WHERE chat_id = ?", (chat_id,)):
+            if m["episode"] is None:
+                continue
+            info = parse_media(m["caption"], m["file_name"], fallback_name=chat["title"])
+            if info.kind != "series" or info.season_explicit:
+                continue
+            season = chat["default_season"] or info.season or 1
+            if season != m["season"]:
+                self.update_media(m["id"], season=season)
+                changed += 1
+        return changed
+
+    def season_labels(self, title_id: int) -> dict[int, str]:
+        rows = self.q(
+            """SELECT DISTINCT m.season, c.season_label FROM media m JOIN chats c ON c.id = m.chat_id
+               WHERE m.title_id = ? AND c.default_season = m.season AND c.season_label IS NOT NULL""",
+            (title_id,),
+        )
+        return {r["season"]: r["season_label"] for r in rows}
 
     def chats(self, enabled_only: bool = False) -> list[dict]:
         sql = "SELECT * FROM chats" + (" WHERE enabled = 1" if enabled_only else "") + " ORDER BY title"

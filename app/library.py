@@ -7,7 +7,7 @@ from .parser import normalize, parse_media
 MIN_UNKNOWN_DURATION_SIZE = 50 * 1024 * 1024  # files without duration: keep only if >= 50MB
 
 
-def add_video(db: Database, v, chat_title: str, min_duration: int = 0) -> bool:
+def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
     """Returns True when a new media row was created."""
     if min_duration:
         if v.duration:
@@ -15,7 +15,11 @@ def add_video(db: Database, v, chat_title: str, min_duration: int = 0) -> bool:
                 return False
         elif v.size < MIN_UNKNOWN_DURATION_SIZE:
             return False
-    info = parse_media(v.caption, v.file_name, fallback_name=chat_title)
+    if isinstance(chat, str):
+        chat = {"title": chat}
+    info = parse_media(v.caption, v.file_name, fallback_name=chat.get("title", ""))
+    if info.kind == "series" and not info.season_explicit and chat.get("default_season"):
+        info.season = chat["default_season"]
     title_id = db.get_or_create_title(info.kind, info.name, normalize(info.name) or info.name, info.year)
     new_id = db.add_media(
         chat_id=v.chat_id,

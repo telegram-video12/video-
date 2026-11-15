@@ -49,6 +49,7 @@ class ParsedInfo:
     name: str
     kind: str  # "series" | "movie"
     season: int | None = None
+    season_explicit: bool = False  # True when the text actually said which season
     episode: int | None = None
     year: int | None = None
 
@@ -116,7 +117,8 @@ def _parse_one(text: str) -> ParsedInfo | None:
         if ym:
             year = int(ym.group(1))
             name = clean_name(re.sub(rf"\b{year}\b", " ", name))
-        return ParsedInfo(name=name, kind="series", season=season or 1, episode=episode, year=year)
+        return ParsedInfo(name=name, kind="series", season=season or 1, episode=episode, year=year,
+                          season_explicit=season is not None)
 
     # No episode marker -> movie
     year = None

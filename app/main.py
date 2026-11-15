@@ -214,6 +214,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         resume = db.resume_point(title_id)
         return ok({
             "title": t,
+            "season_labels": db.season_labels(title_id),
             "media": items,
             "resume": {"media": media_out(resume["media"]), "position": resume["position"], "state": resume["state"]}
             if resume else None,
@@ -434,12 +435,22 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         selected = {c["id"]: c for c in db.chats()}
         out = await tg.list_dialogs()
         for d in out:
-            d["enabled"] = bool(selected.get(d["id"], {}).get("enabled"))
+            saved = selected.get(d["id"], {})
+            d["enabled"] = bool(saved.get("enabled"))
+            d["season"] = saved.get("default_season")
+            d["season_label"] = saved.get("season_label")
         return ok(out)
 
     async def set_chats(request: Request):
         for c in (await body(request)).get("chats", []):
-            db.upsert_chat(int(c["id"]), str(c.get("title") or c["id"]), bool(c.get("enabled")))
+            chat_id = int(c["id"])
+            season = str(c.get("season") or "").strip()
+            season = int(season) if season.isdigit() and int(season) > 0 else None
+            old = db.get_chat(chat_id)
+            db.upsert_chat(chat_id, str(c.get("title") or c["id"]), bool(c.get("enabled")),
+                           season, str(c.get("season_label") or "").strip() or None)
+            if old and old.get("default_season") != season:
+                db.apply_chat_season(chat_id)
         return ok(db.chats())
 
     async def start_scan(request: Request):

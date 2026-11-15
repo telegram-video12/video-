@@ -238,7 +238,7 @@ class Scanner:
                     async for msg_id, v in self.tg.iter_messages(chat["id"], min_id=chat["last_msg_id"]):
                         count += 1
                         last_seen = max(last_seen, msg_id)
-                        if v is not None and self._add_video(self.db, v, chat["title"], self.min_duration):
+                        if v is not None and self._add_video(self.db, v, chat, self.min_duration):
                             self.status["added"] += 1
                         if count % 200 == 0:
                             self.db.set_chat_scanned(chat["id"], last_seen)
