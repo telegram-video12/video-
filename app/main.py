@@ -198,6 +198,42 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
     def thumb_url(media_id: int | None) -> str | None:
         return f"/api/thumb/{media_id}" if media_id else None
 
+    async def episode_names(t: dict | None, wait: float = 6) -> dict:
+        """Episode names/summaries/pictures from TMDB for a series; fetched once a week per season, in the
+        background if TMDB is slow (the page never waits more than a few seconds)."""
+        if not t or t["kind"] != "series" or not t.get("tmdb_id") or not scanner.tmdb or t["id"] in names_off():
+            return {}
+        todo = db.seasons_to_fetch(t["id"])
+        if todo:
+            async def fetch():
+                for s in todo:
+                    try:
+                        db.save_episode_info(t["id"], s, await scanner.tmdb.season(t["tmdb_id"], s))
+                    except Exception as e:  # noqa: BLE001 - try again next time the page is opened
+                        log.info("episode names for %s season %s not loaded: %s", t["name"], s, type(e).__name__)
+                        return
+            task = asyncio.ensure_future(fetch())
+            try:
+                await asyncio.wait_for(asyncio.shield(task), wait)
+            except asyncio.TimeoutError:
+                pass
+        return db.episode_info(t["id"])
+
+    def names_off() -> set[int]:
+        """Series where you turned TMDB's episode names off (e.g. your channels number the seasons differently)."""
+        try:
+            return set(json.loads(db.get_pref("ep_names_off") or "[]"))
+        except ValueError:
+            return set()
+
+    def with_names(m: dict | None, info: dict) -> dict | None:
+        if m is None:
+            return None
+        e = info.get((m["season"] or 1, m["episode"])) if m.get("episode") is not None else None
+        if e:
+            m.update(ep_name=e["name"], ep_overview=e["overview"], ep_still=e["still"])
+        return m
+
     def media_out(m: dict) -> dict:
         return {
             "id": m["id"],
@@ -217,6 +253,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "quality": m.get("quality") or quality_of(m),
             "added_at": m.get("added_at"),
             "versions": m.get("versions", 1),
+            "ep_name": m.get("ep_name"),
+            "ep_overview": m.get("ep_overview"),
+            "ep_still": m.get("ep_still"),
         }
 
     async def library(request: Request):
@@ -432,7 +471,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if not t:
                 raise ApiError(404, "לא נמצא")
         hidden = request.query_params.get("hidden") in ("1", "true")
-        items = [media_out(m) for m in db.title_media(title_id, include_hidden=hidden)]
+        info = await episode_names(t)
+        items = [media_out(with_names(m, info)) for m in db.title_media(title_id, include_hidden=hidden)]
         if not t["poster"] and items:
             t["poster"] = items[0]["thumb"]
         resume = db.resume_point(title_id)
@@ -447,6 +487,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "title": t,
             "new_since": db.last_watched_at(title_id) if t["kind"] == "series" else None,
             "in_list": title_id in db.watchlist_ids(),
+            "ep_names": t["kind"] == "series" and bool(t.get("tmdb_id")),
+            "ep_names_off": title_id in names_off(),
             "season_labels": db.season_labels(title_id),
             "media": items,
             "resume": {"media": media_out(resume["media"]), "position": resume["position"], "state": resume["state"]}
@@ -471,6 +513,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             fields["overview"] = payload["overview"]
         if "poster" in payload:
             fields["poster"] = payload["poster"] or None
+        if "ep_names_off" in payload:
+            off = names_off()
+            off.add(title_id) if payload["ep_names_off"] else off.discard(title_id)
+            db.set_pref("ep_names_off", json.dumps(sorted(off)))
         for key in ("intro_start", "intro_end"):  # the opening of a series, for "skip intro" (seconds; null = clear)
             if key in payload:
                 try:
@@ -536,11 +582,13 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if watched:  # progress is shared between versions of the same episode
             last = max(watched, key=lambda v: v["watched_at"])
             m = dict(m, position=last["position"], completed=max(v["completed"] or 0 for v in watched))
+        t = db.get_title(m["title_id"])
+        info = await episode_names(t, wait=3)
         return ok({
-            "media": media_out(m),
-            "title": db.get_title(m["title_id"]),
-            "prev": media_out(prev) if prev else None,
-            "next": media_out(nxt) if nxt else None,
+            "media": media_out(with_names(dict(m), info)),
+            "title": t,
+            "prev": media_out(with_names(dict(prev), info)) if prev else None,
+            "next": media_out(with_names(dict(nxt), info)) if nxt else None,
             "versions": [{"id": v["id"], "quality": v["quality"], "size": v["size"]} for v in db.versions(media_id)],
         })
 

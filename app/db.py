@@ -52,6 +52,23 @@ CREATE TABLE IF NOT EXISTS media (
 );
 CREATE INDEX IF NOT EXISTS media_title ON media(title_id, season, episode);
 
+CREATE TABLE IF NOT EXISTS episode_info (
+    title_id INTEGER NOT NULL,
+    season   INTEGER NOT NULL,
+    episode  INTEGER NOT NULL,
+    name     TEXT,
+    overview TEXT,
+    still    TEXT,
+    PRIMARY KEY (title_id, season, episode)
+);
+
+CREATE TABLE IF NOT EXISTS episode_seasons (
+    title_id   INTEGER NOT NULL,
+    season     INTEGER NOT NULL,
+    fetched_at REAL NOT NULL,
+    PRIMARY KEY (title_id, season)
+);
+
 CREATE TABLE IF NOT EXISTS watchlist (
     title_id INTEGER PRIMARY KEY,
     added_at REAL NOT NULL
@@ -518,6 +535,28 @@ class Database:
             data.pop(str(title_id), None)
         self.set_pref("cont_hidden", json.dumps(data))
         self.soft_version += 1
+
+    # ------------------------------------------------------- episode names (TMDB)
+    def episode_info(self, title_id: int) -> dict[tuple[int, int], dict]:
+        return {(r["season"], r["episode"]): r for r in
+                self.q("SELECT season, episode, name, overview, still FROM episode_info WHERE title_id = ?", (title_id,))}
+
+    def seasons_to_fetch(self, title_id: int, max_age: float = 7 * 86400) -> list[int]:
+        """Seasons of this series (as you have them) whose episode names were not fetched lately."""
+        rows = self.q("""SELECT DISTINCT COALESCE(m.season, 1) AS s FROM media m
+                         LEFT JOIN episode_seasons e ON e.title_id = m.title_id AND e.season = COALESCE(m.season, 1)
+                         WHERE m.title_id = ? AND m.episode IS NOT NULL AND m.hidden = 0
+                           AND (e.fetched_at IS NULL OR e.fetched_at < ?)""", (title_id, time.time() - max_age))
+        return [r["s"] for r in rows]
+
+    def save_episode_info(self, title_id: int, season: int, episodes: list[dict]) -> None:
+        with self._lock:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO episode_info (title_id, season, episode, name, overview, still) VALUES (?, ?, ?, ?, ?, ?)",
+                [(title_id, season, e["episode"], e.get("name"), e.get("overview"), e.get("still")) for e in episodes])
+            self.conn.execute("INSERT OR REPLACE INTO episode_seasons (title_id, season, fetched_at) VALUES (?, ?, ?)",
+                              (title_id, season, time.time()))
+            self.conn.commit()
 
     # ------------------------------------------------------------ my list
     def watchlist_ids(self) -> list[int]:

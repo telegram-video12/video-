@@ -310,8 +310,16 @@ code { background: var(--s3); padding: 2px 6px; border-radius: 6px; direction: l
 .pl-pill:hover { background: var(--gold); color: #111; border-color: var(--gold); }
 .pl-pill.pl-next { background: var(--gold); color: #111; border-color: var(--gold); }
 .player-wrap:not(.show-ui) .pl-pill { bottom: 24px; }
-.next-overlay .count { font-size: 56px; }
-.player-wrap:has(.overlay) .pl-big, .player-wrap:has(.overlay) .pl-pill { display: none; }
+.next-overlay .count { font-size: 44px; line-height: 1; }
+.next-pic { position: relative; width: 220px; max-width: 60vw; aspect-ratio: 16 / 9; margin: 8px auto; border-radius: 10px; overflow: hidden; background: var(--s2); }
+.next-ov { font-size: 13px; color: #c9cdd8; max-width: 420px; margin: 4px auto 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ep-ov { font-size: 12.5px; color: var(--muted); margin-top: 4px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+@media (max-width: 719px) {  /* the small player on a phone: no room for the picture unless full screen */
+  body:not(.pl-fs) .next-pic, body:not(.pl-fs) .next-ov { display: none; }
+  body:not(.pl-fs) .next-overlay h2 { font-size: 16px; }
+}
+.side-name { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
+.player-wrap:has(.overlay) .pl-big, .player-wrap:has(.overlay) .pl-pill { display: none !important; }
 .kbd-help { font-size: 13px; }
 @media (max-width: 719px) {
   .pl-vol, .kbd-help, .pl-row [data-a="back10"], .pl-row [data-a="fwd10"] { display: none; }

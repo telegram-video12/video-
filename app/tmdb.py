@@ -105,6 +105,33 @@ class TMDB:
                 return [item]
         return []
 
+    async def season(self, tmdb_id: int, season: int) -> list[dict]:
+        """Episode names, short summaries and pictures of one season, in Hebrew (English summary when no Hebrew)."""
+        async with self._client_ctx() as client:
+            try:
+                data = await self._get(client, f"/tv/{tmdb_id}/season/{season}", language="he-IL")
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:  # TMDB has no such season (e.g. your channel's own numbering)
+                    return []
+                raise
+            eps = data.get("episodes") or []
+            if eps and not any(e.get("overview") for e in eps):
+                try:
+                    en = await self._get(client, f"/tv/{tmdb_id}/season/{season}", language="en-US")
+                    by_num = {e.get("episode_number"): e for e in en.get("episodes") or []}
+                    for e in eps:
+                        e["overview"] = (by_num.get(e.get("episode_number")) or {}).get("overview")
+                except Exception:  # noqa: BLE001 - names without summaries are fine too
+                    pass
+        out = []
+        for e in eps:
+            name = (e.get("name") or "").strip()
+            if name and name.lower().replace(" ", "") in (f"episode{e.get('episode_number')}", f"פרק{e.get('episode_number')}"):
+                name = ""  # "Episode 3" says nothing new
+            out.append({"episode": e.get("episode_number"), "name": name or None, "overview": e.get("overview") or None,
+                        "still": IMG + "w300" + e["still_path"] if e.get("still_path") else None})
+        return [e for e in out if e["episode"] is not None]
+
     async def lookup(self, kind: str, name: str, year: int | None = None, tmdb_id: int | None = None,
                      have_overview: bool = False, duration: float | None = None) -> dict | None:
         media_type = "tv" if kind == "series" else "movie"

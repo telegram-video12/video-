@@ -782,7 +782,13 @@ async function pageTitle(id) {
   $app.querySelector('#title-menu').onclick = async () => {
     const opts = [['edit', editMode ? '✓ סיום עריכה' : '✏️ עריכת פרטים ופרקים'],
                   ['all', '✓ סמן הכל כנצפה'], ['reset', '↺ אפס התקדמות']];
+    if (data.ep_names) opts.push(['names', data.ep_names_off ? '🏷 הצג שמות ותקצירי פרקים מ-TMDB' : '🏷 הסתר שמות פרקים מ-TMDB (אם הם לא מתאימים)']);
     const v = await bottomSheet(t.name, opts, '');
+    if (v === 'names') {
+      try { await api(`/api/titles/${t.id}`, {method: 'PATCH', body: {ep_names_off: !data.ep_names_off}}); } catch (e) { alert(e.message); return; }
+      reload();
+      return;
+    }
     if (v === 'edit') { editMode = !editMode; pageTitle(id); }
     else if (v === 'all') markMany(visible.map((m) => m.id), true, isSeries ? 'הסדרה' : 'הסרט');
     else if (v === 'reset') markMany(visible.map((m) => m.id), false, isSeries ? 'הסדרה' : 'הסרט');
@@ -829,19 +835,22 @@ async function pageTitle(id) {
 
 function episodeRow(m, isSeries, version, current) {
   const p = pct(m);
-  const title = isSeries && m.episode != null ? `פרק ${m.episode}` : (firstLine(m.caption) || m.file_name || 'וידאו');
-  const desc = [firstLine(m.caption) || m.file_name, fmtDur(m.duration), m.quality ? m.quality + 'p' : '', fmtSize(m.size),
-                !editMode && m.versions > 1 ? `${m.versions} גרסאות` : '']
-    .filter(Boolean).map(esc).join(' · ');
+  const isEp = isSeries && m.episode != null;
+  const title = isEp ? `פרק ${m.episode}${m.ep_name ? ' · ' + m.ep_name : ''}` : (firstLine(m.caption) || m.file_name || 'וידאו');
+  // like a streaming app: length and quality; the file's own caption/size only while editing
+  const desc = [editMode || !isEp ? firstLine(m.caption) || m.file_name : '', fmtDur(m.duration), m.quality ? m.quality + 'p' : '',
+                editMode ? fmtSize(m.size) : '', !editMode && m.versions > 1 ? `${m.versions} גרסאות` : '']
+    .filter((x, i) => x && !(i === 0 && x === title)).map(esc).join(' · ');
   const state = m.completed ? '<span class="badge ok">נצפה</span>'
     : m.position >= 10 ? `<span class="badge accent">עצרת ב-${fmtTime(m.position)}</span>`
     : titleNewSince && m.added_at > titleNewSince ? '<span class="badge new">חדש</span>' : '';
   return `<div class="ep ${current ? 'current' : ''} ${m.hidden ? 'is-hidden' : ''}" data-id="${m.id}">
     <a class="num" href="#/watch/${m.id}">${isSeries && m.episode != null ? m.episode : '▶'}</a>
-    <a class="thumb" href="#/watch/${m.id}">${img(m.thumb)}${p ? `<div class="bar"><i style="width:${p}%"></i></div>` : ''}</a>
+    <a class="thumb" href="#/watch/${m.id}">${img(m.ep_still || m.thumb)}${p ? `<div class="bar"><i style="width:${p}%"></i></div>` : ''}</a>
     <a class="info" href="#/watch/${m.id}">
       <div class="t">${esc(title)} ${version ? `<span class="badge">גרסה ${version}</span>` : ''} ${state}</div>
       <div class="c">${desc}</div>
+      ${m.ep_overview && !editMode ? `<div class="ep-ov">${esc(m.ep_overview)}</div>` : ''}
     </a>
     <div class="side">
       <button class="check ${m.completed ? 'on' : ''}" title="${m.completed ? 'סמן כלא נצפה' : 'סמן כנצפה'}" data-act="watched" data-id="${m.id}">✓</button>
@@ -921,11 +930,11 @@ async function pageWatch(id) {
   const {media: m, title: t, prev, next, versions} = await api(`/api/media/${id}`);
   const isSeries = t.kind === 'series' && m.episode != null;
   document.title = `${t.name}${isSeries ? ' · ' + epLabel(m) : ''}`;
-  const sub = isSeries ? epLong(m) + (firstLine(m.caption) ? ' · ' + firstLine(m.caption) : '') : '';
+  const sub = isSeries ? epLong(m) + (m.ep_name ? ' · ' + m.ep_name : '') : '';
 
   $app.innerHTML = `<div class="watch-layout"><div class="watch">
     <div class="player-wrap show-ui paused" id="pw">
-      <video id="v" playsinline preload="metadata" src="/api/stream/${m.id}"></video>
+      <video id="v" playsinline autopictureinpicture preload="metadata" src="/api/stream/${m.id}"></video>
       <div class="pl-spin"><div class="spinner"></div></div>
       <div class="pl-flash" id="flash"></div>
       <button class="pl-big" data-a="play" aria-label="נגן">▶</button>
@@ -934,7 +943,7 @@ async function pageWatch(id) {
         <div class="pl-name"><b>${esc(t.name)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</div>
       </div>
       <button class="pl-pill pl-skip" id="skip" hidden>⏭ דלג על הפתיחה</button>
-      ${next ? `<a class="pl-pill pl-next" id="nextpill" href="#/watch/${next.id}" hidden>הפרק הבא · ${esc(epLabel(next))} ⏭</a>` : ''}
+      ${next ? `<a class="pl-pill pl-next" id="nextpill" href="#/watch/${next.id}" hidden>הפרק הבא · ${esc(next.ep_name || epLabel(next))} ⏭</a>` : ''}
       <div class="pl-bar">
         <div class="pl-seek" id="seek"><div class="pl-track"><i class="pl-buf"></i><i class="pl-played"></i></div><i class="pl-knob"></i><span class="pl-tip"></span></div>
         <div class="pl-row">
@@ -948,6 +957,7 @@ async function pageWatch(id) {
           <button class="pl-btn pl-txt" data-a="sleep" id="sleepbtn" title="שעון שינה">🌙</button>
           <button class="pl-btn pl-txt" data-a="speed" id="speedbtn" title="מהירות">1x</button>
           ${isSeries ? '<button class="pl-btn" data-a="intro" title="הגדרת הפתיחה של הסדרה">⚙</button>' : ''}
+          ${document.pictureInPictureEnabled ? '<button class="pl-btn" data-a="pip" aria-label="חלון צף" title="חלון צף">⧉</button>' : ''}
           <button class="pl-btn" data-a="fs" aria-label="מסך מלא">⛶</button>
         </div>
       </div>
@@ -974,8 +984,8 @@ async function pageWatch(id) {
       const list = media.filter((x) => (x.season ?? 1) === (m.season ?? 1));
       side.innerHTML = `<h3>${esc(t.name)}</h3><div class="muted" style="margin-bottom:12px">עונה ${m.season ?? 1} · ${count(list.length, 'פרק אחד', 'פרקים')}</div>` +
         list.map((x) => `<a class="side-ep ${x.episode === m.episode ? 'on' : ''}" href="#/watch/${x.id}">
-          <div class="thumb">${img(x.thumb)}${pct(x) ? `<div class="bar"><i style="width:${pct(x)}%"></i></div>` : ''}</div>
-          <div><b>פרק ${x.episode}</b><div class="muted">${x.episode === m.episode ? 'מתנגן עכשיו' : x.completed ? '✓ נצפה' : fmtDur(x.duration)}</div></div></a>`).join('');
+          <div class="thumb">${img(x.ep_still || x.thumb)}${pct(x) ? `<div class="bar"><i style="width:${pct(x)}%"></i></div>` : ''}</div>
+          <div><b>פרק ${x.episode}</b>${x.ep_name ? `<div class="side-name">${esc(x.ep_name)}</div>` : ''}<div class="muted">${x.episode === m.episode ? 'מתנגן עכשיו' : x.completed ? '✓ נצפה' : fmtDur(x.duration)}</div></div></a>`).join('');
       side.querySelector('.side-ep.on')?.scrollIntoView({block: 'center'});
     }).catch(() => {});
   }
@@ -1156,9 +1166,36 @@ async function pageWatch(id) {
   };
   drawSleep();
 
+  // ---- lock screen / notification: name, picture and buttons (play, pause, ±10 s, previous/next episode)
+  const ms = navigator.mediaSession;
+  const msSet = (action, fn) => { try { ms.setActionHandler(action, fn); } catch (_) {} };
+  if (ms) {
+    const pic = t.poster || m.ep_still || m.thumb;
+    try {
+      ms.metadata = new MediaMetadata({
+        title: isSeries ? (m.ep_name ? `${epLabel(m)} · ${m.ep_name}` : epLong(m)) : t.name,
+        artist: isSeries ? t.name : (t.year ? String(t.year) : ''),
+        album: 'הספרייה שלי',
+        artwork: pic ? [{src: new URL(pic, location.href).href, sizes: '342x513', type: 'image/jpeg'}] : [],
+      });
+    } catch (_) {}
+    msSet('play', () => v.play().catch(() => {}));
+    msSet('pause', () => v.pause());
+    msSet('seekbackward', (d) => seek(v.currentTime - (d.seekOffset || 10)));
+    msSet('seekforward', (d) => seek(v.currentTime + (d.seekOffset || 10)));
+    msSet('seekto', (d) => seek(d.seekTime));
+    msSet('previoustrack', prev ? () => { location.hash = `#/watch/${prev.id}`; } : null);
+    msSet('nexttrack', next ? () => { location.hash = `#/watch/${next.id}`; } : null);
+  }
+  const msPosition = () => {
+    if (!ms || !ms.setPositionState || !isFinite(v.duration) || !v.duration) return;
+    try { ms.setPositionState({duration: v.duration, playbackRate: v.playbackRate, position: Math.min(v.currentTime, v.duration)}); } catch (_) {}
+  };
+
   // ---- every second: the time line, skip button, next-episode button, sleep timer
   tick = setInterval(() => {
     if (!dragging) drawTime();
+    msPosition();
     const ct = v.currentTime, d = v.duration;
     const showSkip = isSeries && !v.paused && (hasIntro() ? inIntro(ct) && !introDone : !genericSkipUsed && ct > 3 && ct < 240);
     if (isSeries && hasIntro() && inIntro(ct) && !introDone && autoSkip() && !v.paused) skipIntro();
@@ -1213,8 +1250,12 @@ async function pageWatch(id) {
     let n = 10;
     const o = document.createElement('div');
     o.className = 'overlay next-overlay';
+    const pic = next.ep_still || next.thumb;
     o.innerHTML = `<div class="box"><div class="muted">הפרק הבא מתחיל בעוד</div>
-      <div class="count" id="cd">${n}</div><h2>${esc(epLong(next))}</h2>
+      <div class="count" id="cd">${n}</div>
+      ${pic ? `<div class="next-pic">${img(pic)}</div>` : ''}
+      <h2>${esc(epLong(next))}${next.ep_name ? ` · ${esc(next.ep_name)}` : ''}</h2>
+      ${next.ep_overview ? `<p class="next-ov">${esc(next.ep_overview)}</p>` : ''}
       <div style="display:flex;gap:8px;justify-content:center;margin-top:12px">
         <a class="btn primary" href="#/watch/${next.id}">▶ נגן עכשיו</a>
         <button class="btn" id="cancel-next">ביטול</button></div></div>`;
@@ -1237,6 +1278,10 @@ async function pageWatch(id) {
     next: () => { location.hash = `#/watch/${next.id}`; },
     mute: () => { v.muted = !v.muted; if (!v.muted && v.volume === 0) v.volume = 0.5; },
     fs: () => toggleFs(),
+    pip: () => {  // small floating window that stays on top of other apps
+      if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+      else v.requestPictureInPicture().catch(() => toast('החלון הצף לא זמין כרגע בדפדפן הזה', 3000));
+    },
     speed: async () => {
       const r = await bottomSheet('מהירות ניגון', [0.5, 0.75, 1, 1.25, 1.5, 2].map((x) => [String(x), x === 1 ? 'רגיל' : `${x}x`]), String(v.playbackRate));
       if (r) v.playbackRate = +r;
@@ -1311,6 +1356,11 @@ async function pageWatch(id) {
     clearInterval(nextTimer);
     clearInterval(tick);
     clearTimeout(hideTimer);
+    if (ms) {
+      ['play', 'pause', 'seekbackward', 'seekforward', 'seekto', 'previoustrack', 'nexttrack'].forEach((a) => msSet(a, null));
+      try { ms.metadata = null; } catch (_) {}
+    }
+    if (document.pictureInPictureElement === v) document.exitPictureInPicture().catch(() => {});
     document.removeEventListener('keydown', onKey);
     document.removeEventListener('visibilitychange', onHide);
     document.removeEventListener('fullscreenchange', onFs);

@@ -111,3 +111,30 @@ def test_your_series_name_survives_tmdb_refresh(client):
     client.patch(f"/api/titles/{t['id']}", json={"name": "פאודה שלי"})
     db = client.app.state.db
     assert db.get_title(t["id"])["name_manual"] == 1
+
+
+def test_episode_names_from_tmdb_and_switch_off(client, monkeypatch):
+    from app.tmdb import TMDB
+    login(client)
+    scan(client)
+    db = client.app.state.db
+    fauda = next(t for t in client.get("/api/library").json()["titles"] if t["name"] == "פאודה")
+    db.update_title(fauda["id"], tmdb_id=99, tmdb_checked=1, tmdb_details=1)
+    calls = []
+
+    async def season(self, tmdb_id, s):
+        calls.append(s)
+        return [{"episode": 1, "name": "הכל מתחיל", "overview": "דורון חוזר לשטח.", "still": "https://img/1.jpg"}]
+
+    monkeypatch.setattr(TMDB, "season", season)
+    client.app.state.scanner.tmdb = TMDB("k")
+    d = client.get(f"/api/titles/{fauda['id']}").json()
+    ep1 = next(m for m in d["media"] if m["season"] == 1 and m["episode"] == 1)
+    assert (ep1["ep_name"], ep1["ep_still"]) == ("הכל מתחיל", "https://img/1.jpg") and d["ep_names"]
+    client.get(f"/api/titles/{fauda['id']}")
+    assert calls.count(1) == 1  # fetched once, then kept
+    w = client.get(f"/api/media/{ep1['id']}").json()
+    assert w["media"]["ep_name"] == "הכל מתחיל"
+    client.patch(f"/api/titles/{fauda['id']}", json={"ep_names_off": True})
+    d = client.get(f"/api/titles/{fauda['id']}").json()
+    assert d["ep_names_off"] and all(m["ep_name"] is None for m in d["media"])
