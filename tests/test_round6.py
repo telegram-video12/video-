@@ -201,3 +201,14 @@ def test_titles_with_posters_come_first(client):
     assert names == ["עם פוסטר חדש", "עם פוסטר ישן", "בלי פוסטר"]
     names = [t["name"] for t in client.get("/api/library?kind=movie&sort=year").json()["titles"]]
     assert names[-1] == "בלי פוסטר"
+
+
+def test_my_top_10(client):
+    login(client)
+    scan(client)
+    lib = client.get("/api/library").json()["titles"]
+    assert client.get("/api/home").json()["top"] == []  # nothing watched yet
+    for i, t in enumerate(lib[:3]):
+        client.post(f"/api/progress/{t['first_media_id']}", json={"position": 100 * (i + 1), "duration": 1500})
+    top = client.get("/api/home").json()["top"]
+    assert [t["id"] for t in top] == [lib[2]["id"], lib[1]["id"], lib[0]["id"]]  # the most watched first

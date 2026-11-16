@@ -596,6 +596,12 @@ class Database:
             self.conn.executemany("UPDATE progress SET history_hidden = 1 WHERE media_id = ?", [(i,) for i in media_ids])
             self.conn.commit()
 
+    def most_watched(self, limit: int = 10) -> list[int]:
+        """Titles you spent the most time watching (the place reached in each video counts)."""
+        rows = self.q(f"""SELECT m.title_id, SUM(p.position) AS s FROM progress p JOIN media m ON m.id = p.media_id
+                          WHERE p.position >= {MIN_STARTED} GROUP BY m.title_id ORDER BY s DESC LIMIT ?""", (limit * 2,))
+        return [r["title_id"] for r in rows]
+
     def watch_stats(self) -> dict:
         """Roughly how much you watched: the place you reached in each video counts as time watched."""
         now = time.time()

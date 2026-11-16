@@ -397,7 +397,13 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if len(rows) >= 4:
                 break
         return ok({"new": [card(t) for t in fresh[:20]], "genres": rows, "personal": based_on_you,
-                   "watchlist": watchlist_cards()[:20], "featured": featured(items, day)})
+                   "watchlist": watchlist_cards()[:20], "featured": featured(items, day), "top": top_mine(items)})
+
+    def top_mine(items: list[dict]) -> list[dict]:
+        """"טופ 10 שלי": what you watched the most (shown once there are at least 3)."""
+        by_id = {t["id"]: t for t in items}
+        top = [card(by_id[i]) for i in db.most_watched(10) if i in by_id][:10]
+        return top if len(top) >= 3 else []
 
     def featured(items: list[dict], day: int) -> list[dict]:
         """The big swipeable pictures at the top of the home page: new and highly rated titles that have a wide

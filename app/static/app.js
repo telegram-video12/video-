@@ -87,6 +87,10 @@ async function route() {
     else if (first === 'mylist') await pageMyList();
     else await pageHome();
     if (st.scrollY) requestAnimationFrame(() => window.scrollTo(0, st.scrollY));
+    // a soft fade-and-rise for the new page (not when only the episode changes inside the player)
+    if (!(first === 'watch' && prev && prev.startsWith('/watch/'))) {
+      $app.classList.remove('page-in'); void $app.offsetWidth; $app.classList.add('page-in');
+    }
   } catch (e) {
     if (e.message !== 'login') $app.innerHTML = errorBox(e);
   }
@@ -142,6 +146,7 @@ async function pageHome() {
     ['cont', 'המשך צפייה', () => cont.length && rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`)],
     ['new', '✨ פרקים חדשים', () => extra.new.length && rowSection('✨ פרקים חדשים', '', posterRow(extra.new))],
     ['watch', '⭐ לצפות בהמשך', () => (extra.watchlist || []).length && rowSection('⭐ לצפות בהמשך', '#/mylist', posterRow(extra.watchlist))],
+    ['top', '🏆 טופ 10 שלי', () => (extra.top || []).length && rowSection('🏆 טופ 10 שלי', '', `<div class="hrow top10">${extra.top.map((t, i) => `<div class="top-item"><span class="top-num">${i + 1}</span>${posterCard(t)}</div>`).join('')}</div>`)],
     ['newSeries', '📺 סדרות חדשות', () => newSeries.titles.length && rowSection('📺 סדרות חדשות', '', posterRow(newSeries.titles))],
     ['newMovies', '🎬 סרטים חדשים', () => newMovies.titles.length && rowSection('🎬 סרטים חדשים', '', posterRow(newMovies.titles))],
     ['genres', 'שורות לפי ז\'אנרים', () => extra.genres.slice(0, 3).map((r) => rowSection(extra.personal ? `כי אתה אוהב ${r.genre}` : r.genre, '', posterRow(r.titles))).join('')],
@@ -817,7 +822,8 @@ async function pageTitle(id) {
   const cast = (t.cast || []).slice(0, 10);
 
   $app.innerHTML = `
-    <section class="hero" ${bg(t.backdrop)}>
+    <section class="hero ${t.backdrop ? 'has-bg' : ''}" ${t.backdrop ? '' : bg(t.backdrop)}>
+      ${t.backdrop ? `<div class="hero-bg">${img(t.backdrop)}</div>` : ''}
       <a class="iconbtn hero-back" href="javascript:history.back()" aria-label="חזרה">→</a>
       <button class="iconbtn hero-menu" id="title-menu" aria-label="עוד">⋯</button>
       <div class="hero-inner">
@@ -841,9 +847,9 @@ async function pageTitle(id) {
     ${cast.length ? `<div class="cast">${cast.map((c) => `<div class="castm"><div class="avatar">${c.photo ? img(c.photo) : `<span>${esc((c.name || '?')[0])}</span>`}</div><div class="cn">${esc(c.name)}</div></div>`).join('')}</div>` : ''}
     </aside><section class="title-main">
     ${editMode ? editTitlePanel(t) : ''}
-    ${isSeries && seasons.length > 1 ? `<div class="chips season-tabs">
-        ${seasons.map((s) => `<button class="tab ${s === season ? 'active' : ''}" data-season="${s}">עונה ${s}${labels[s] ? ' · ' + esc(labels[s]) : ''}</button>`).join('')}
-      </div>` : ''}
+    ${isSeries && seasons.length > 1 ? `<nav class="season-tabs">
+        ${seasons.map((s) => `<button class="stab ${s === season ? 'active' : ''}" data-season="${s}">עונה ${s}${labels[s] ? `<small>${esc(labels[s])}</small>` : ''}</button>`).join('')}
+      </nav>` : ''}
     ${isSeries ? '<div class="season-bar" id="season-bar"></div>' : ''}
     <div class="episodes" id="eps"></div>
     </section></div>`;
@@ -897,7 +903,10 @@ async function pageTitle(id) {
     season = +b.dataset.season;
     sessionStorage.setItem(key, season);
     $app.querySelectorAll('[data-season]').forEach((x) => x.classList.toggle('active', x === b));
+    b.scrollIntoView({behavior: 'smooth', inline: 'center', block: 'nearest'});
     renderEps();
+    const eps = $app.querySelector('#eps');
+    eps.classList.remove('fade-in'); void eps.offsetWidth; eps.classList.add('fade-in');
   });
   $app.querySelector('#more-overview')?.addEventListener('click', (e) => {
     $app.querySelector('#overview').classList.toggle('clamp');
