@@ -1,4 +1,4 @@
-/* הספרייה שלי - single page app (hash routing, no build step) */
+/* Streamora - single page app (hash routing, no build step) */
 'use strict';
 
 const $app = document.getElementById('app');
@@ -100,9 +100,9 @@ $tabbar.addEventListener('click', (e) => {
 
 function pageHeader(title, sub = '', {logo = false, dice = null} = {}) {
   return `<header class="phead${logo ? ' home-head' : ''}">
-    <div class="phead-title">${logo ? '<span class="logo"><i></i>הספרייה שלי</span>' : `<h1>${esc(title)}</h1>${sub ? `<div class="phead-sub">${sub}</div>` : ''}`}</div>
+    <div class="phead-title">${logo ? '<span class="logo" dir="ltr"><svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4.6v14.8a1.2 1.2 0 0 0 1.8 1l12.2-7.4a1.2 1.2 0 0 0 0-2L8.3 3.6a1.2 1.2 0 0 0-1.8 1z" fill="#16d9c5"/></svg><span>Streamora</span></span>' : `<h1>${esc(title)}</h1>${sub ? `<div class="phead-sub">${sub}</div>` : ''}`}</div>
     ${dice !== null ? `<button class="iconbtn dice" data-dice="${dice}" aria-label="תפתיע אותי" title="תפתיע אותי">🎲</button>` : ''}
-    <a class="iconbtn" href="#/search" aria-label="חיפוש">🔍</a>
+    <a class="iconbtn" href="#/search" aria-label="חיפוש"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></a>
   </header>`;
 }
 
@@ -1269,7 +1269,7 @@ async function pageWatch(id) {
       ms.metadata = new MediaMetadata({
         title: isSeries ? (m.ep_name ? `${epLabel(m)} · ${m.ep_name}` : epLong(m)) : t.name,
         artist: isSeries ? t.name : (t.year ? String(t.year) : ''),
-        album: 'הספרייה שלי',
+        album: 'Streamora',
         artwork: pic ? [{src: new URL(pic, location.href).href, sizes: '342x513', type: 'image/jpeg'}] : [],
       });
     } catch (_) {}
@@ -1486,7 +1486,7 @@ async function pageWatch(id) {
     v.pause();
     v.removeAttribute('src');
     v.load(); // stop downloading
-    document.title = 'הספרייה שלי';
+    document.title = 'Streamora';
     libraryCache = null;
     // full screen stays on only when going straight to another episode
     setTimeout(() => {
