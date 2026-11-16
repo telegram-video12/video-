@@ -40,7 +40,10 @@ async function api(path, opts = {}) {
     init.body = JSON.stringify(opts.body);
     init.headers['Content-Type'] = 'application/json';
   }
-  const r = await fetch(path, init);
+  let r;
+  try { r = await fetch(path, init); } catch (_) {
+    throw new Error('אין חיבור לאתר כרגע. בדוק שהאתר פועל (ב-Termux או במחשב) ושיש רשת.');
+  }
   if (r.status === 401) { location.href = '/login'; throw new Error('login'); }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.detail || `שגיאה ${r.status}`);
@@ -57,8 +60,10 @@ let lastTab = 'home';
 
 async function route() {
   const prev = route.current;
+  route.cameFrom = prev || null;
   if (prev && pageState[prev]) pageState[prev].scrollY = window.scrollY;
   if (cleanup) { try { cleanup(); } catch (_) {} cleanup = null; }
+  closeAllSheets();
   const hash = location.hash.replace(/^#/, '') || '/';
   route.current = hash;
   const [path] = hash.split('?');
@@ -109,6 +114,8 @@ function emptyLibrary() {
 
 const PAGE = 60;
 const n = (x) => Number(x || 0).toLocaleString('he-IL');
+// "פרק אחד" instead of "1 פרקים"
+const count = (x, one, many) => (Number(x) === 1 ? one : `${n(x)} ${many}`);
 
 // ---------------------------------------------------------------------- home
 async function pageHome() {
@@ -203,6 +210,39 @@ const store = {  // localStorage can be missing (private mode): never let it bre
 const DECADES = [['', 'כל השנים'], ['2020', '2020 ומעלה'], ['2010', '2010–2019'], ['2000', '2000–2009'], ['1990', '1990–1999'], ['old', 'לפני 1990']];
 const SORTS = [['added', 'נוסף לאחרונה'], ['watched', 'נצפה לאחרונה'], ['name', 'א–ת'], ['year', 'שנה (חדש קודם)'], ['rating', 'דירוג (גבוה קודם)']];
 
+// ---- the phone's "back" closes an open sheet instead of leaving the page
+const openSheets = [];
+let popsToIgnore = 0, afterPop = null;
+function sheetOpened(closeByBack) {
+  const entry = {closeByBack};
+  openSheets.push(entry);
+  history.pushState({sheet: true}, '');
+  // call when the page closes the sheet itself; resolves once the extra history step is gone
+  return () => new Promise((done) => {
+    const i = openSheets.indexOf(entry);
+    if (i < 0) { done(); return; }
+    openSheets.splice(i, 1);
+    popsToIgnore++;
+    afterPop = done;
+    setTimeout(() => { if (afterPop === done) { afterPop = null; done(); } }, 400);  // in case no popstate comes
+    history.back();
+  });
+}
+window.addEventListener('popstate', () => {
+  if (popsToIgnore) {
+    popsToIgnore--;
+    const f = afterPop; afterPop = null;
+    if (f) f();
+    return;
+  }
+  const top = openSheets.pop();
+  if (top) top.closeByBack();
+});
+function closeAllSheets() {  // leaving the page: no sheet may stay on top of the next one
+  openSheets.splice(0).forEach((s) => s.closeByBack());
+  document.querySelectorAll('.sheet-wrap').forEach((el) => el.remove());
+}
+
 function multiSheet(title, options, chosen, note = '') {
   // options: [[value, label]]; returns the new list, or null when closed without "החל"
   return new Promise((resolve) => {
@@ -214,7 +254,9 @@ function multiSheet(title, options, chosen, note = '') {
       ${note ? `<p class="sheet-note">${note}</p>` : ''}
       <div class="sheet-list">${options.map(([v, l]) => `<button class="sheet-opt ${picked.has(v) ? 'on' : ''}" data-v="${esc(v)}">${esc(l)}<span class="tick">${picked.has(v) ? '✓' : ''}</span></button>`).join('')}</div>
       <button class="btn primary wide" data-apply>החל</button></div>`;
-    const close = (v) => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); resolve(v); };
+    const hide = () => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); };
+    const release = sheetOpened(() => { hide(); resolve(null); });
+    const close = (v) => { hide(); release().then(() => resolve(v)); };
     el.addEventListener('click', (e) => {
       const b = e.target.closest('.sheet-opt');
       if (b) {
@@ -244,8 +286,14 @@ async function surprise(kind) {
   const el = document.createElement('div');
   el.className = 'sheet-wrap';
   el.innerHTML = '<div class="sheet dice-sheet"><div class="sheet-grip"></div><div class="spinner"></div></div>';
-  const close = () => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); };
-  el.addEventListener('click', (e) => { if (e.target === el || e.target.closest('[data-close]')) close(); });
+  const hide = () => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); };
+  const release = sheetOpened(hide);
+  const close = (href) => { hide(); release().then(() => { if (href) location.hash = href; }); };
+  el.addEventListener('click', (e) => {
+    const a = e.target.closest('a[href^="#"]');
+    if (a) { e.preventDefault(); close(a.getAttribute('href')); return; }
+    if (e.target === el || e.target.closest('[data-close]')) close();
+  });
   document.body.appendChild(el);
   requestAnimationFrame(() => el.classList.add('open'));
   const kinds = [['', 'הכל'], ['series', 'סדרה'], ['movie', 'סרט']];
@@ -275,7 +323,6 @@ async function surprise(kind) {
       </div>`;
     box.querySelector('[data-again]').onclick = roll;
     box.querySelectorAll('[data-k]').forEach((c) => { c.onclick = () => { kind = c.dataset.k; last = ''; roll(); }; });
-    box.querySelectorAll('a').forEach((a) => a.addEventListener('click', close));
   };
   roll();
 }
@@ -287,7 +334,9 @@ function bottomSheet(title, options, current) {
     el.innerHTML = `<div class="sheet"><div class="sheet-grip"></div><h3>${esc(title)}</h3>
       ${options.map(([v, l]) => `<button class="sheet-opt ${v === current ? 'on' : ''}" data-v="${esc(v)}">${esc(l)}${v === current ? '<span>✓</span>' : ''}</button>`).join('')}
     </div>`;
-    const close = (v) => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); resolve(v); };
+    const hide = () => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); };
+    const release = sheetOpened(() => { hide(); resolve(null); });
+    const close = (v) => { hide(); release().then(() => resolve(v)); };
     el.addEventListener('click', (e) => {
       const b = e.target.closest('.sheet-opt');
       if (b) close(b.dataset.v); else if (e.target === el) close(null);
@@ -398,9 +447,11 @@ function infiniteScroll(loadMore) {
 async function pageSearch(st) {
   $app.innerHTML = `<header class="phead"><div class="searchbox">
       <span>🔍</span><input id="q" type="search" enterkeyhint="search" placeholder="חיפוש סדרה או סרט..." value="${esc(st.q || '')}" autocomplete="off">
-    </div><a class="iconbtn" href="javascript:history.back()" aria-label="חזרה">✕</a></header>
+    </div><button class="iconbtn" id="search-close" aria-label="חזרה">✕</button></header>
     <div id="results"></div>`;
   const input = $app.querySelector('#q'), out = $app.querySelector('#results');
+  // ✕: back to where you came from, or home when search was the first page opened
+  $app.querySelector('#search-close').onclick = () => { if (route.cameFrom) history.back(); else location.hash = '#/'; };
   let timer = null, saveTimer = null, token = 0;
   const recent = () => store.get('recent-searches', []);
   const remember = (q) => store.set('recent-searches', [q, ...recent().filter((x) => x !== q)].slice(0, 8));
@@ -421,10 +472,18 @@ async function pageSearch(st) {
     clearTimeout(saveTimer);
     if (!q) { showRecent(); return; }
     out.innerHTML = skeletonGrid();
-    const [s, m] = await Promise.all([
-      api(`/api/library?kind=series&sort=year&limit=30&nocont=1&q=${encodeURIComponent(q)}`),
-      api(`/api/library?kind=movie&sort=year&limit=60&q=${encodeURIComponent(q)}`),
-    ]);
+    let s, m;
+    try {
+      [s, m] = await Promise.all([
+        api(`/api/library?kind=series&sort=year&limit=30&nocont=1&q=${encodeURIComponent(q)}`),
+        api(`/api/library?kind=movie&sort=year&limit=60&q=${encodeURIComponent(q)}`),
+      ]);
+    } catch (e) {
+      if (my !== token) return;
+      out.innerHTML = `<div class="empty"><h2>החיפוש לא הצליח</h2><p>${esc(e.message)}</p><button class="btn" id="retry">נסה שוב</button></div>`;
+      out.querySelector('#retry').onclick = run;
+      return;
+    }
     if (my !== token) return;
     if (!s.total && !m.total) {
       out.innerHTML = `<div class="empty"><h2>לא נמצא "${esc(q)}" בספרייה</h2><p>אולי הקבוצה שלו לא מסומנת ב<a class="link" href="#/more">הגדרות</a>.</p></div>`;
@@ -476,7 +535,7 @@ function myWatchlist(data) {
   if (!data.watchlist.length) {
     return `<div class="empty small"><h2>הרשימה ריקה</h2><p>בדף של כל סדרה או סרט יש כפתור <b>＋ לצפות בהמשך</b>. מה ששומרים מופיע כאן ובדף הבית.</p></div>`;
   }
-  return `<div class="muted ml-count">${n(data.watchlist.length)} שמורים</div><div class="pgrid">${data.watchlist.map(posterCard).join('')}</div>`;
+  return `<div class="muted ml-count">${count(data.watchlist.length, 'שמור אחד', 'שמורים')}</div><div class="pgrid">${data.watchlist.map(posterCard).join('')}</div>`;
 }
 
 function dayName(ts) {
@@ -518,7 +577,7 @@ function hoursText(sec) {
 function myStats(s) {
   const box = (label, x) => `<div class="stat">
       <div class="stat-label">${label}</div><div class="stat-big">${hoursText(x.seconds)}</div>
-      <div class="stat-sub">${n(x.episodes)} פרקים · ${n(x.movies)} סרטים</div></div>`;
+      <div class="stat-sub">${count(x.episodes, 'פרק אחד', 'פרקים')} · ${count(x.movies, 'סרט אחד', 'סרטים')}</div></div>`;
   const max = Math.max(1, ...s.days.map((d) => d.seconds));
   const bars = s.days.map((d, i) => {
     const date = new Date(d.day * 1000);
@@ -542,20 +601,47 @@ function contCard(c) {
     : c.state === 'start' ? '<span class="badge">חדש</span>'
     : `<span>נשארו ${fmtTime((m.duration || 0) - c.position)}</span>`;
   const pic = c.title.backdrop || m.thumb || c.title.poster;
-  return `<a class="cont-card" href="#/watch/${m.id}">
+  return `<a class="cont-card" href="#/watch/${m.id}" data-tid="${c.title.id}" data-kind="${c.title.kind}" data-name="${esc(c.title.name)}">
     <div class="img"><div class="ph">${esc(c.title.name)}</div>${img(pic)}<div class="play">▶</div></div>
     <div class="bar"><i style="width:${p}%"></i></div>
     <div class="body">
-      <div class="name">${esc(c.title.name)}</div>
+      <div class="name-row"><div class="name">${esc(c.title.name)}</div><button class="cont-more" data-cont-menu aria-label="אפשרויות">⋮</button></div>
       <div class="meta"><span>${esc(epLong(m) || 'סרט')}</span>${label}</div>
     </div></a>`;
 }
+
+// "continue watching" card: ⋮ or a long press -> remove it from the row / go to its page
+async function contMenu(card) {
+  const series = card.dataset.kind === 'series';
+  const v = await bottomSheet(card.dataset.name, [['hide', '✕ הסר מ"המשך צפייה"'], ['title', `ⓘ לדף ה${series ? 'סדרה' : 'סרט'}`]], '');
+  if (v === 'title') { location.hash = `#/title/${card.dataset.tid}`; return; }
+  if (v !== 'hide') return;
+  try { await api('/api/continue/hide', {method: 'POST', body: {title_id: +card.dataset.tid}}); } catch (e) { alert(e.message); return; }
+  card.remove();
+  undoToast(`"${card.dataset.name}" הוסר מהמשך צפייה`, async () => {
+    await api('/api/continue/hide', {method: 'POST', body: {title_id: +card.dataset.tid, hidden: false}}).catch(() => {});
+    route();
+  });
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-cont-menu]');
+  if (!b) return;
+  e.preventDefault();
+  e.stopPropagation();
+  contMenu(b.closest('.cont-card'));
+});
+document.addEventListener('contextmenu', (e) => {
+  const card = e.target.closest('.cont-card');
+  if (!card) return;
+  e.preventDefault();
+  contMenu(card);
+});
 
 function posterCard(t) {
   const watchedAll = t.media_count && t.watched_count >= t.media_count;
   const p = t.media_count ? (t.watched_count / t.media_count) * 100 : 0;
   const sub = t.kind === 'series'
-    ? `${t.season_count > 1 ? t.season_count + ' עונות · ' : ''}${t.media_count === 1 ? 'פרק אחד' : t.media_count + ' פרקים'}`
+    ? `${t.season_count > 1 ? t.season_count + ' עונות · ' : ''}${count(t.media_count, 'פרק אחד', 'פרקים')}`
     : null;
   // numbers in a right-to-left line get reordered by the browser, so each one is isolated
   const movieSub = [t.year, t.duration ? fmtLen(t.duration) : ''].filter(Boolean).map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ') || 'סרט';
@@ -618,7 +704,7 @@ async function pageTitle(id) {
           <div class="facts">${facts}</div>
           <div class="chips-inline">
             ${t.rating ? `<span class="chip-s gold">⭐ ${t.rating} TMDB</span>` : ''}
-            ${isSeries ? `<span class="chip-s">${total} פרקים</span>` : ''}
+            ${isSeries ? `<span class="chip-s">${count(total, 'פרק אחד', 'פרקים')}</span>` : ''}
           </div>
         </div>
       </div>
@@ -709,7 +795,7 @@ async function pageTitle(id) {
     const list = seasonList();
     const idx = list.findIndex((m) => String(m.id) === row.dataset.id);
     if (idx < 0) return;
-    const v = await bottomSheet(`פרק ${list[idx].episode}`, [['upto', `✓ סמן עד כאן כנצפה (${idx + 1} פרקים)`]], '');
+    const v = await bottomSheet(`פרק ${list[idx].episode}`, [['upto', `✓ סמן עד כאן כנצפה (${count(idx + 1, 'פרק אחד', 'פרקים')})`]], '');
     if (v === 'upto') markMany(list.slice(0, idx + 1).map((m) => m.id), true, `עד פרק ${list[idx].episode}`);
   });
 
@@ -886,7 +972,7 @@ async function pageWatch(id) {
       const side = $app.querySelector('#wside');
       if (!side) return;
       const list = media.filter((x) => (x.season ?? 1) === (m.season ?? 1));
-      side.innerHTML = `<h3>${esc(t.name)}</h3><div class="muted" style="margin-bottom:12px">עונה ${m.season ?? 1} · ${list.length} פרקים</div>` +
+      side.innerHTML = `<h3>${esc(t.name)}</h3><div class="muted" style="margin-bottom:12px">עונה ${m.season ?? 1} · ${count(list.length, 'פרק אחד', 'פרקים')}</div>` +
         list.map((x) => `<a class="side-ep ${x.episode === m.episode ? 'on' : ''}" href="#/watch/${x.id}">
           <div class="thumb">${img(x.thumb)}${pct(x) ? `<div class="bar"><i style="width:${pct(x)}%"></i></div>` : ''}</div>
           <div><b>פרק ${x.episode}</b><div class="muted">${x.episode === m.episode ? 'מתנגן עכשיו' : x.completed ? '✓ נצפה' : fmtDur(x.duration)}</div></div></a>`).join('');
@@ -1314,7 +1400,7 @@ async function pageSettings(section) {
     'sec-tg': auth ? `✓ מחובר${st.me?.name ? ' · ' + st.me.name : ''}` : 'לא מחובר',
     'sec-scan': st.scan?.running ? '⏳ סורק עכשיו' : '',
     'sec-sync': st.sync?.peer ? st.sync.peer : 'כבוי',
-    'sec-dups': st.duplicates ? `${st.duplicates} לבדיקה` : 'אין',
+    'sec-dups': !st.duplicates ? 'אין' : st.duplicates === 1 ? 'אחת לבדיקה' : `${n(st.duplicates)} לבדיקה`,
     'sec-tmdb': !st.tmdb ? 'לא מוגדר' : st.tmdb_status?.running ? `⏳ ${st.tmdb_status.done.toLocaleString('he-IL')} מתוך ${st.tmdb_status.total.toLocaleString('he-IL')}` : '✓ פעיל',
   };
 
@@ -1443,8 +1529,8 @@ async function pageSettings(section) {
     try { ({pairs, total} = await api('/api/duplicates')); } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
     if (!pairs.length) { box.innerHTML = '<div class="note">✓ אין כרגע כפילויות לבדיקה.</div>'; return; }
     const one = (x, kind) => `<a class="dup-t" href="#/title/${x.id}"><div class="poster">${img(x.poster)}</div>
-      <div><b>${esc(x.name)}</b><span>${[x.year, kind === 'movie' && x.duration ? fmtDur(x.duration) : '', x.files === 1 ? 'קובץ אחד' : `${x.files} קבצים`].filter(Boolean).map((y) => `<bdi>${esc(y)}</bdi>`).join(' · ')}</span></div></a>`;
-    box.innerHTML = `<div class="muted" style="font-size:13px;margin-bottom:8px">${total === 1 ? 'זוג אחד' : n(total) + ' זוגות'}${total > pairs.length ? ` (מוצגים ${pairs.length} הראשונים)` : ''}</div>` + pairs.map((p) => `
+      <div><b>${esc(x.name)}</b><span>${[x.year, kind === 'movie' && x.duration ? fmtDur(x.duration) : '', count(x.files, 'קובץ אחד', 'קבצים')].filter(Boolean).map((y) => `<bdi>${esc(y)}</bdi>`).join(' · ')}</span></div></a>`;
+    box.innerHTML = `<div class="muted" style="font-size:13px;margin-bottom:8px">${count(total, 'זוג אחד', 'זוגות')}${total > pairs.length ? ` (מוצגים ${pairs.length} הראשונים)` : ''}</div>` + pairs.map((p) => `
       <div class="dup" data-key="${p.key}">
         <div class="dup-pair">${one(p.a, p.kind)}<span class="dup-eq">≈</span>${one(p.b, p.kind)}</div>
         <div class="dup-acts">
@@ -1503,14 +1589,14 @@ async function pageSettings(section) {
     const when = s.last_finished ? new Date(s.last_finished * 1000).toLocaleString('he-IL') : 'עדיין לא';
     // per group: what the last scan found, and why nothing was added when that happens
     const why = (r) => {
-      const parts = [`נבדקו ${n(r.checked)} הודעות`, `${n(r.videos)} סרטונים`, `נוספו ${n(r.added)}`];
+      const parts = [`נבדקו ${count(r.checked, 'הודעה אחת', 'הודעות')}`, count(r.videos, 'סרטון אחד', 'סרטונים'), `נוספו ${n(r.added)}`];
       let hint = '';
       if (!r.checked) hint = r.first ? 'לא נמצאו הודעות בקבוצה.' : 'אין הודעות חדשות מאז הסריקה הקודמת.';
-      else if (!r.videos && r.files) hint = `יש ${n(r.files)} קבצים, אבל אף אחד מהם אינו קובץ וידאו (למשל RAR/ZIP או מסמכים).`;
+      else if (!r.videos && r.files) hint = `יש ${count(r.files, 'קובץ אחד', 'קבצים')}, אבל אף אחד מהם אינו קובץ וידאו (למשל RAR/ZIP או מסמכים).`;
       else if (!r.videos) hint = 'אין בקבוצה סרטונים, רק הודעות טקסט, תמונות או קישורים.';
       else if (!r.added && r.short === r.videos) hint = 'כל הסרטונים קצרים מ-3 דקות (טריילרים/קטעים), ולכן דולגו.';
       else if (!r.added) hint = 'כל הסרטונים כבר נמצאים בספרייה.';
-      else if (r.short) hint = `${n(r.short)} סרטונים קצרים מ-3 דקות דולגו.`;
+      else if (r.short) hint = r.short === 1 ? 'סרטון אחד קצר מ-3 דקות דולג.' : `${n(r.short)} סרטונים קצרים מ-3 דקות דולגו.`;
       return `<div class="scan-rep"><b>${esc(r.chat)}</b>: ${parts.join(' · ')}${hint ? `<div class="muted">${esc(hint)}</div>` : ''}</div>`;
     };
     el.innerHTML = s.running

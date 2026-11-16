@@ -184,7 +184,7 @@ class TMDB:
             soft=True,
             tmdb_checked=1,
             tmdb_id=meta["tmdb_id"],
-            name=meta["tmdb_name"] or title["name"],
+            name=title["name"] if title.get("name_manual") else (meta["tmdb_name"] or title["name"]),
             overview=meta["overview"] or title.get("overview"),
             poster=meta["poster"],
             backdrop=meta["backdrop"],

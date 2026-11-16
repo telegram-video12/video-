@@ -46,8 +46,8 @@ SYNC_EVERY_SECONDS = 5 * 60
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, detail: str = ""):
-        self.status, self.detail = status, detail or "שגיאה"
+    def __init__(self, status: int, detail: str = "", headers: dict | None = None):
+        self.status, self.detail, self.headers = status, detail or "שגיאה", headers
 
 
 def ok(data=None, status: int = 200) -> JSONResponse:
@@ -362,6 +362,15 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         db.set_watchlist(title_id, on)
         return ok({"on": on})
 
+    async def continue_hide(request: Request):
+        """Remove a title from "continue watching" (it comes back when you watch it again)."""
+        data = await body(request)
+        title_id = int(data.get("title_id") or 0)
+        if not db.get_title(title_id):
+            raise ApiError(404, "לא נמצא")
+        db.hide_from_continue(title_id, bool(data.get("hidden", True)))
+        return ok()
+
     async def history_hide(request: Request):
         ids = [int(i) for i in (await body(request)).get("ids", []) if str(i).isdigit()][:1000]
         db.hide_history(ids)
@@ -452,6 +461,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         fields = {}
         if payload.get("name"):
             fields["name"] = str(payload["name"]).strip()
+            if fields["name"] != db.get_title(title_id)["name"]:
+                fields["name_manual"] = 1  # your name stays, even when TMDB info is fetched again
         if payload.get("kind") in ("series", "movie"):
             fields["kind"] = payload["kind"]
         if "year" in payload:
@@ -596,20 +607,24 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         media_id = request.path_params["id"]
         path = settings.data_dir / "thumbs" / f"{media_id}.jpg"
         missing = settings.data_dir / "thumbs" / f"{media_id}.none"
+        no_picture = {"Cache-Control": "private, max-age=86400"}  # the browser stops asking for a day
         if not path.exists():
             m = db.get_media(media_id)
-            if not m or missing.exists() or not tg.authorized:
-                raise ApiError(404)
+            if not m or missing.exists():
+                raise ApiError(404, headers=no_picture)
+            if not tg.authorized:
+                raise ApiError(503)
             try:  # never let one slow picture hold the browser's connections (it only has a few)
                 data = await asyncio.wait_for(tg.thumbnail(m["chat_id"], m["msg_id"]), 12)
             except asyncio.TimeoutError:
                 asyncio.ensure_future(tg.heal())  # pictures stuck: maybe the file connection went stale
                 raise ApiError(504) from None  # try again next time; not marked as missing
-            except Exception:  # noqa: BLE001
-                data = None
-            if not data:
+            except Exception as e:  # noqa: BLE001 - e.g. no connection right now: try again next time
+                log.info("picture %s not loaded now: %s", media_id, type(e).__name__)
+                raise ApiError(503) from None
+            if not data:  # the video really has no picture: remember, never ask Telegram again
                 missing.touch()
-                raise ApiError(404)
+                raise ApiError(404, headers=no_picture)
             path.write_bytes(data)
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
 
@@ -855,6 +870,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
             retry_unmatched(db)
             refresh_series_years(db)
+            if db.get_pref("thumbs_retry") != "1":  # pictures wrongly marked "none" during connection problems
+                for f in (settings.data_dir / "thumbs").glob("*.none"):
+                    f.unlink(missing_ok=True)
+                db.set_pref("thumbs_retry", "1")
             await asyncio.to_thread(merge_similar_movies, db)
         except Exception as e:  # noqa: BLE001 - never take the site down for this; show it in Settings
             log.exception("library upkeep failed")
@@ -913,7 +932,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         await tg.stop()
 
     async def api_error(request: Request, exc: ApiError):
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status)
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status, headers=exc.headers)
 
     async def server_error(request: Request, exc: Exception):
         """Show what went wrong instead of a bare 500, and keep a log in data/errors.log."""
@@ -939,6 +958,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/library", library), R("/api/genres", genres_list), R("/api/home", home_rows), R("/api/random", random_pick),
         R("/api/mylist", my_list), R("/api/watchlist/{id:int}", watchlist_set, methods=["POST"]),
         R("/api/history/hide", history_hide, methods=["POST"]),
+        R("/api/continue/hide", continue_hide, methods=["POST"]),
         R("/api/duplicates", duplicates), R("/api/duplicates/dismiss", duplicates_dismiss, methods=["POST"]),
         R("/api/watched-many", watched_many, methods=["POST"]),
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),

@@ -114,7 +114,8 @@ class Database:
         for col, typ in (("genres", "TEXT"), ("rating", "REAL"), ("runtime", "INTEGER"), ("cast_json", "TEXT"),
                          ("original_name", "TEXT"), ("tmdb_details", "INTEGER NOT NULL DEFAULT 0"),
                          ("intro_start", "REAL"), ("intro_end", "REAL"),  # where the opening song is (per series)
-                         ("last_year", "INTEGER")):  # series: the year of its latest episode (TMDB)
+                         ("last_year", "INTEGER"),  # series: the year of its latest episode (TMDB)
+                         ("name_manual", "INTEGER NOT NULL DEFAULT 0")):  # you renamed it: TMDB keeps out
             if col not in tcols:  # TMDB details (genres, rating, length, cast)
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
@@ -270,7 +271,7 @@ class Database:
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked",
                    "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details",
-                   "intro_start", "intro_end", "last_year"}
+                   "intro_start", "intro_end", "last_year", "name_manual"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -506,6 +507,18 @@ class Database:
             self.x("UPDATE progress SET completed = 0, position = 0, updated_at = ? WHERE media_id = ?",
                    (time.time(), media_id))
 
+    def hide_from_continue(self, title_id: int, hidden: bool) -> None:
+        try:
+            data = json.loads(self.get_pref("cont_hidden") or "{}")
+        except ValueError:
+            data = {}
+        if hidden:
+            data[str(title_id)] = time.time()
+        else:
+            data.pop(str(title_id), None)
+        self.set_pref("cont_hidden", json.dumps(data))
+        self.soft_version += 1
+
     # ------------------------------------------------------------ my list
     def watchlist_ids(self) -> list[int]:
         return [r["title_id"] for r in self.q("SELECT title_id FROM watchlist ORDER BY added_at DESC")]
@@ -629,8 +642,14 @@ class Database:
                GROUP BY m.title_id ORDER BY last DESC LIMIT ?""",
             (limit * 2,),
         )
+        try:  # titles you removed from "continue watching" (until you watch them again)
+            hidden = json.loads(self.get_pref("cont_hidden") or "{}")
+        except ValueError:
+            hidden = {}
         out = []
         for row in rows:
+            if hidden.get(str(row["title_id"]), 0) >= row["last"]:
+                continue
             point = self.resume_point(row["title_id"])
             if not point or point["state"] == "done":
                 continue

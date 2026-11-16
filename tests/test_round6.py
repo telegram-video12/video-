@@ -66,3 +66,48 @@ def test_newest_rows_sort_by_release_year(client):
     series = [t["name"] for t in client.get("/api/library?kind=series&sort=release").json()["titles"]]
     assert movies == ["חדש", "ישן"]                 # unknown year left out
     assert series == ["סדרה ותיקה", "סדרה"]          # by the latest season (2025), not the first (2005)
+
+
+def test_remove_from_continue_watching_until_watched_again(client):
+    import time
+    login(client)
+    scan(client)
+    fauda = next(t for t in client.get("/api/library").json()["titles"] if t["name"] == "פאודה")
+    ep = client.get(f"/api/titles/{fauda['id']}").json()["media"][0]
+    client.post(f"/api/progress/{ep['id']}", json={"position": 600, "duration": 1500})
+    assert [c["title"]["id"] for c in client.get("/api/library").json()["continue"]] == [fauda["id"]]
+    client.post("/api/continue/hide", json={"title_id": fauda["id"]})
+    assert client.get("/api/library").json()["continue"] == []
+    time.sleep(0.01)
+    client.post(f"/api/progress/{ep['id']}", json={"position": 700, "duration": 1500})  # watched again: back
+    assert [c["title"]["id"] for c in client.get("/api/library").json()["continue"]] == [fauda["id"]]
+
+
+def test_thumbnail_errors_are_not_remembered_as_no_picture(client, tmp_path):
+    login(client)
+    scan(client)
+    media_id = client.get("/api/library").json()["titles"][0]["first_media_id"]
+    tg = client.app.state.tg
+
+    async def broken(*a):
+        raise ConnectionError("Cannot send requests while disconnected")
+
+    tg.thumbnail = broken
+    assert client.get(f"/api/thumb/{media_id}").status_code == 503
+    assert not (client.app.state.settings.data_dir / "thumbs" / f"{media_id}.none").exists()
+
+    async def none(*a):
+        return None
+
+    tg.thumbnail = none
+    r = client.get(f"/api/thumb/{media_id}")
+    assert r.status_code == 404 and "max-age" in r.headers.get("cache-control", "")
+
+
+def test_your_series_name_survives_tmdb_refresh(client):
+    login(client)
+    scan(client)
+    t = next(t for t in client.get("/api/library").json()["titles"] if t["name"] == "פאודה")
+    client.patch(f"/api/titles/{t['id']}", json={"name": "פאודה שלי"})
+    db = client.app.state.db
+    assert db.get_title(t["id"])["name_manual"] == 1

@@ -155,6 +155,11 @@ body.in-player main { padding-bottom: 24px; }
 .cont-card .img .bar { position: absolute; bottom: 0; left: 0; right: 0; border-radius: 0; z-index: 2; }
 .cont-card .body { padding-top: 6px; }
 .cont-card .name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cont-card .name-row { display: flex; align-items: center; gap: 4px; }
+.cont-card .name-row .name { flex: 1; min-width: 0; }
+.cont-more { background: none; border: 0; color: var(--muted); font-size: 20px; line-height: 1; padding: 2px 6px; margin: -4px -6px -4px 0; cursor: pointer; border-radius: 8px; }
+.cont-more:hover { background: var(--s2); color: var(--text); }
+.cont-card { -webkit-touch-callout: none; }
 .cont-card .meta { color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 8px; }
 
 /* ---------- loading skeletons ---------- */
