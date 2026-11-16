@@ -420,7 +420,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         pool = [t for _, t in scored[:24]]
         random.Random(day).shuffle(pool)
         out = []
-        for t in pool[:8]:
+        for t in pool[:10]:
             c = card(t)
             point = db.resume_point(t["id"])
             c["play_id"] = point["media"]["id"] if point else t["first_media_id"]

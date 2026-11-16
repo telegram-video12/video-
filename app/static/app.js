@@ -160,38 +160,83 @@ async function pageHome() {
     store.set('home:hidden', rows.map(([k]) => k).filter((k) => !pick.includes(k)));
     pageHome();
   };
-  if (feat.length > 1) cleanup = startCarousel($app.querySelector('.car'));
+  if (feat.length) cleanup = startCarousel($app.querySelector('.cf'));
 }
 
 // site credit, at the bottom of the home and settings pages (and on the login page)
 const copyright = () => '<footer class="site-credit">© 2026 בנימין אמבאו · כל הזכויות שמורות</footer>';
 
-// the swipeable pictures at the top of the home page
+// the top of the home page: a 3D wheel of square cards (coverflow). Swipe, tap a side card, or let it turn.
 function carousel(list) {
-  return `<section class="car"><div class="car-track">${list.map((t) => banner({title: t, media: {id: t.play_id}},
-      t.recent ? '🆕 חדש' : '⭐ מומלץ')).join('')}</div>
-    ${list.length > 1 ? `<div class="car-dots">${list.map((_, i) => `<button data-i="${i}" class="${i ? '' : 'on'}" aria-label="תמונה ${i + 1}"></button>`).join('')}</div>
-    <button class="car-arrow next" aria-label="הבא">‹</button><button class="car-arrow prev" aria-label="הקודם">›</button>` : ''}</section>`;
+  const items = list.slice().sort(() => Math.random() - 0.5);  // a different first card every visit
+  carousel.items = items;
+  return `<section class="cf">
+    <div class="cf-glow"><img alt=""></div>
+    <div class="cf-stage">${items.map((t, i) => `<a class="cf-card" data-i="${i}" href="#/title/${t.id}">
+      <div class="cf-img">${img(t.backdrop || t.poster)}</div>
+      <span class="cf-tag">${t.recent ? '🆕 חדש' : '⭐ מומלץ'}</span></a>`).join('')}</div>
+    <div class="cf-info"></div>
+    <div class="cf-dots">${items.map((_, i) => `<i data-i="${i}"></i>`).join('')}</div>
+    <button class="cf-arrow next" aria-label="הבא">‹</button><button class="cf-arrow prev" aria-label="הקודם">›</button>
+  </section>`;
 }
 
-function startCarousel(car) {
-  const track = car.querySelector('.car-track');
-  const slides = [...track.children];
-  const dots = [...car.querySelectorAll('.car-dots button')];
-  const sign = getComputedStyle(track).direction === 'rtl' ? -1 : 1;  // right-to-left: scrolling goes negative
-  const current = () => Math.round(Math.abs(track.scrollLeft) / (track.clientWidth || 1));
-  const go = (i) => track.scrollTo({left: sign * ((i + slides.length) % slides.length) * track.clientWidth, behavior: 'smooth'});
-  track.addEventListener('scroll', () => {
-    const i = current();
-    dots.forEach((d, k) => d.classList.toggle('on', k === i));
-  }, {passive: true});
-  let auto = setInterval(() => { if (!document.hidden) go(current() + 1); }, 7000);
-  const stop = () => { clearInterval(auto); auto = null; };  // once you touch it, it stays where you left it
-  track.addEventListener('pointerdown', stop, {passive: true});
-  track.addEventListener('touchstart', stop, {passive: true});
+function startCarousel(root) {
+  const items = carousel.items || [];
+  const cards = [...root.querySelectorAll('.cf-card')];
+  const dots = [...root.querySelectorAll('.cf-dots i')];
+  const info = root.querySelector('.cf-info');
+  const glow = root.querySelector('.cf-glow img');
+  const n = cards.length;
+  let cur = 0, auto = null;
+  const rtl = getComputedStyle(root).direction === 'rtl';
+  const draw = () => {
+    cards.forEach((c, i) => {
+      let d = i - cur;  // shortest way around the wheel
+      if (d > n / 2) d -= n;
+      if (d < -n / 2) d += n;
+      const a = Math.abs(d), x = (rtl ? -1 : 1) * d;
+      c.style.transform = `translateX(${x * 56}%) translateZ(${-a * 90}px) rotateY(${-x * 32}deg) scale(${1 - Math.min(a, 3) * 0.12})`;
+      c.style.zIndex = String(20 - a);
+      c.style.opacity = a > 2 ? '0' : String(1 - a * 0.28);
+      c.style.pointerEvents = a > 2 ? 'none' : '';
+      c.classList.toggle('on', d === 0);
+    });
+    dots.forEach((d, i) => d.classList.toggle('on', i === cur));
+    const t = items[cur];
+    if (!t) return;
+    glow.src = t.backdrop || t.poster || '';
+    const facts = [t.year, (t.genres || []).slice(0, 2).join(', '), t.rating ? `⭐ ${t.rating}` : ''].filter(Boolean)
+      .map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ');
+    info.innerHTML = `<div class="cf-text"><h2>${esc(t.name)}</h2><div class="facts">${facts}</div>
+      <div class="cf-actions"><a class="btn primary" href="#/watch/${t.play_id}">▶ צפה עכשיו</a>
+      <a class="btn ghost" href="#/title/${t.id}">ⓘ פרטים</a></div></div>`;
+  };
+  const go = (i) => { cur = ((i % n) + n) % n; draw(); };
+  const stop = () => { clearInterval(auto); auto = null; };  // once you touch it, it stays
+  // swipe (and drag with the mouse on a computer)
+  const stage = root.querySelector('.cf-stage');
+  let x0 = null, moved = false;
+  stage.addEventListener('dragstart', (e) => e.preventDefault());  // a dragged picture would cancel the swipe
+  stage.addEventListener('pointerdown', (e) => { x0 = e.clientX; moved = false; stop(); });
+  stage.addEventListener('pointermove', (e) => { if (x0 !== null && Math.abs(e.clientX - x0) > 12) moved = true; });
+  stage.addEventListener('pointerup', (e) => {
+    if (x0 === null) return;
+    const dx = e.clientX - x0;
+    x0 = null;
+    // right-to-left: the next card waits on the left, so dragging the finger to the right brings it in
+    if (Math.abs(dx) > 40) go(cur + ((rtl ? dx > 0 : dx < 0) ? 1 : -1));
+  });
+  stage.addEventListener('click', (e) => {
+    const c = e.target.closest('.cf-card');
+    if (!c) return;
+    if (moved || !c.classList.contains('on')) { e.preventDefault(); if (!moved) { stop(); go(+c.dataset.i); } }
+  });
   dots.forEach((d, i) => d.onclick = () => { stop(); go(i); });
-  car.querySelector('.car-arrow.next')?.addEventListener('click', () => { stop(); go(current() + 1); });
-  car.querySelector('.car-arrow.prev')?.addEventListener('click', () => { stop(); go(current() - 1); });
+  root.querySelector('.cf-arrow.next').onclick = () => { stop(); go(cur + 1); };
+  root.querySelector('.cf-arrow.prev').onclick = () => { stop(); go(cur - 1); };
+  draw();
+  auto = setInterval(() => { if (!document.hidden) go(cur + 1); }, 6000);
   return () => clearInterval(auto);
 }
 
