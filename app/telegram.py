@@ -218,10 +218,12 @@ class TelegramService:
         await self._ensure()
         client = self._require()
         entity = await self._entity(chat_id)
-        async for msg in client.iter_messages(entity, min_id=min_id, reverse=True):
+        # Telethon waits a whole second between pages of 100 messages unless told otherwise: on a channel with
+        # 100,000 messages that alone is half an hour. A short pause is enough (Telegram's "slow down" is handled).
+        async for msg in client.iter_messages(entity, min_id=min_id, reverse=True, wait_time=0.15):
             v = message_to_video(chat_id, msg)
             if v:
-                self._msg_cache[(chat_id, msg.id)] = (time.time(), msg)
+                pass  # not kept in memory: a big channel would fill the phone's memory
             elif getattr(msg, "file", None) is not None:
                 v = NOT_VIDEO  # a file that is not a video (archive, picture, document...)
             yield msg.id, v
@@ -236,7 +238,7 @@ class TelegramService:
         msg = await client.get_messages(await self._entity(chat_id), ids=msg_id)
         if msg is None:
             raise FileNotFoundError("message was deleted from Telegram")
-        self._msg_cache[key] = (time.time(), msg)
+        self._remember(key, msg)
         return msg
 
     async def stream(self, chat_id: int, msg_id: int, start: int, end: int) -> AsyncIterator[bytes]:
@@ -281,6 +283,12 @@ class TelegramService:
                 await self.heal()
                 client = self._require()
 
+    def _remember(self, key, msg) -> None:
+        if len(self._msg_cache) > 3000:  # keep memory small: forget the oldest half
+            for k in sorted(self._msg_cache, key=lambda k: self._msg_cache[k][0])[:1500]:
+                self._msg_cache.pop(k, None)
+        self._msg_cache[key] = (time.time(), msg)
+
     async def _get_message_batched(self, chat_id: int, msg_id: int):
         """A page shows dozens of pictures at once: ask Telegram for all their messages in ONE request
         instead of one request each (many quick requests make Telegram pause us for up to a minute)."""
@@ -309,7 +317,7 @@ class TelegramService:
                 msgs = await client.get_messages(entity, ids=part)
                 for mid, msg in zip(part, msgs):
                     if msg is not None:
-                        self._msg_cache[(chat_id, mid)] = (time.time(), msg)
+                        self._remember((chat_id, mid), msg)
                         waiting[mid].set_result(msg)
                     else:
                         waiting[mid].set_exception(FileNotFoundError("message was deleted from Telegram"))
@@ -372,6 +380,7 @@ class Scanner:
             from .branding import VERSION as BRANDING_VERSION
             upgraded = self.db.get_pref("branding_version") != BRANDING_VERSION
             changed = upgraded or any(c.get("branding") is None for c in self.db.chats(enabled_only=True))
+            changed_chats = {c["id"] for c in self.db.chats(enabled_only=True) if c.get("branding") is None}
             try:
                 for chat in self.db.chats(enabled_only=True):
                     if chat_ids and chat["id"] not in chat_ids:
@@ -405,9 +414,14 @@ class Scanner:
                     log.info("scanned chat %s: %d messages checked", chat["id"], count)
                     if count:
                         changed = True
+                        changed_chats.add(chat["id"])
+                    if rep["added"]:
+                        self.db.version += 1  # show this group's new videos right away
                 if changed:  # learn channel signatures and re-file names (see branding.py)
                     self.status["chat"] = "מסדר שמות"
-                    await asyncio.to_thread(self._regroup_all, self.db, upgraded)
+                    # only the groups with new videos (all of them after an update of the name rules)
+                    await asyncio.to_thread(self._regroup_all, self.db, upgraded,
+                                            None if upgraded or not changed_chats else changed_chats)
                     self.db.set_pref("branding_version", BRANDING_VERSION)
                 if self.tmdb:  # posters are fetched in the background; scanning is not held up
                     self.start_tmdb()

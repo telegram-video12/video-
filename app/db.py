@@ -251,7 +251,7 @@ class Database:
                 return tid
         return None
 
-    def get_or_create_title(self, kind: str, name: str, norm_name: str, year: int | None) -> int:
+    def get_or_create_title(self, kind: str, name: str, norm_name: str, year: int | None, soft: bool = False) -> int:
         from .parser import normalize
 
         with self._lock:
@@ -261,6 +261,7 @@ class Database:
         return self.x(
             "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (kind, name, self.free_key(self.conn, kind, norm_name, year), normalize(name), year, time.time()),
+            soft=soft,
         )
 
     @staticmethod
@@ -401,8 +402,12 @@ class Database:
         return self.q1("SELECT * FROM titles WHERE id = ?", (title_id,))
 
     # ------------------------------------------------------------------ media
-    def add_media(self, **m: Any) -> int | None:
-        """Insert a media row; existing (chat_id, msg_id) rows are left untouched so manual edits survive."""
+    def has_media(self, chat_id: int, msg_id: int) -> bool:
+        return self.q1("SELECT 1 AS x FROM media WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id)) is not None
+
+    def add_media(self, _soft: bool = False, **m: Any) -> int | None:
+        """Insert a media row; existing (chat_id, msg_id) rows are left untouched so manual edits survive.
+        _soft: during a scan - the library list refreshes every few seconds instead of after every video."""
         with self._lock:
             cur = self.conn.execute(
                 """INSERT OR IGNORE INTO media
@@ -413,7 +418,10 @@ class Database:
                 {"auto_norm": None, **m},
             )
             self.conn.commit()
-            self.version += 1
+            if _soft:
+                self.soft_version += 1
+            else:
+                self.version += 1
             return cur.lastrowid if cur.rowcount else None
 
     def get_media(self, media_id: int) -> dict | None:

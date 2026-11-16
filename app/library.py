@@ -39,12 +39,17 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
             return False
     if isinstance(chat, str):
         chat = {"title": chat}
-    info = parse_media(v.caption, v.file_name, fallback_name=chat.get("title", ""), branding=chat_branding(chat, db))
+    if db.has_media(v.chat_id, v.msg_id):  # already in the library (e.g. a full re-scan): nothing to do
+        return False
+    if "_branding" not in chat:  # the same for every video of this group: work it out once per scan
+        chat["_branding"] = chat_branding(chat, db)
+    info = parse_media(v.caption, v.file_name, fallback_name=chat.get("title", ""), branding=chat["_branding"])
     if info.kind == "series" and not info.season_explicit and chat.get("default_season"):
         info.season = chat["default_season"]
     norm = normalize(info.name) or info.name
-    title_id = db.get_or_create_title(info.kind, info.name, norm, info.year)
+    title_id = db.get_or_create_title(info.kind, info.name, norm, info.year, soft=True)
     new_id = db.add_media(
+        _soft=True,
         auto_norm=norm,
         chat_id=v.chat_id,
         msg_id=v.msg_id,
@@ -296,11 +301,12 @@ def retry_unmatched(db: Database) -> None:
     db.set_pref("tmdb_retry", "smart1")
 
 
-def regroup_all(db: Database, force: bool = False) -> int:
+def regroup_all(db: Database, force: bool = False, only: set | None = None) -> int:
     """Re-learn every channel's signature (the whole library is used to confirm them).
-    force: also re-file when only the name parser itself changed (after an update)."""
+    force: also re-file when only the name parser itself changed (after an update).
+    only: just these groups (the ones a scan found new videos in)."""
     corpus = _corpus(db)
-    moved = sum(regroup_chat(db, c["id"], corpus, force) for c in db.chats())
+    moved = sum(regroup_chat(db, c["id"], corpus, force) for c in db.chats() if only is None or c["id"] in only)
     moved += db.merge_by_name()
     moved += merge_similar_movies(db)
     db.x("UPDATE media SET auto_norm = (SELECT norm_name FROM titles t WHERE t.id = media.title_id) "
