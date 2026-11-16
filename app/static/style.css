@@ -501,6 +501,8 @@ body.pl-fs { overflow: hidden; }
 .car-dots button.on { width: 20px; background: var(--gold); }
 .car-arrow { display: none; }
 .car .banner-text { padding-bottom: 34px; }
+.site-credit { text-align: center; color: var(--muted); font-size: 12px; opacity: .75; padding: 18px 0 6px; letter-spacing: .2px; }
+.login-page .site-credit { position: fixed; bottom: calc(14px + env(safe-area-inset-bottom)); left: 0; right: 0; }
 .home-foot { text-align: center; margin: 26px 0 8px; }
 /* ---------- possible duplicates ---------- */
 .dup { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 10px; background: var(--s2); }

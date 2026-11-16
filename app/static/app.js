@@ -151,7 +151,7 @@ async function pageHome() {
   const hidden = new Set(store.get('home:hidden', []));
   $app.innerHTML = head + (feat.length ? carousel(feat) : top ? banner(top) : '') +
     rows.filter(([k]) => !hidden.has(k)).map(([, , html]) => html() || '').join('') +
-    '<div class="home-foot"><button class="linkbtn" id="home-rows">⚙ סידור דף הבית</button></div>';
+    '<div class="home-foot"><button class="linkbtn" id="home-rows">⚙ סידור דף הבית</button></div>' + copyright();
   $app.querySelector('#home-rows').onclick = async () => {
     const shown = rows.filter(([k]) => !hidden.has(k)).map(([k]) => k);
     const pick = await multiSheet('אילו שורות להציג בדף הבית?', rows.map(([k, label]) => [k, label]), shown,
@@ -162,6 +162,9 @@ async function pageHome() {
   };
   if (feat.length > 1) cleanup = startCarousel($app.querySelector('.car'));
 }
+
+// site credit, at the bottom of the home and settings pages (and on the login page)
+const copyright = () => '<footer class="site-credit">© 2026 בנימין אמבאו · כל הזכויות שמורות</footer>';
 
 // the swipeable pictures at the top of the home page
 function carousel(list) {
@@ -1629,7 +1632,8 @@ async function pageSettings(section) {
         <button class="btn danger" id="logout">יציאה מהאתר</button>
       </div>
     </div>
-    </div></div>`;
+    </div></div>
+    ${copyright()}`;
 
   const $ = (sel) => $app.querySelector(sel);
   $app.querySelectorAll('[data-go]').forEach((b) => b.onclick = () => {
