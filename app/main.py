@@ -331,6 +331,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                            key=lambda t: (t.get("last_year") or t["year"], t["year"]), reverse=True)
         elif sort == "rating":
             items = sorted(items, key=lambda t: t["rating"] or 0, reverse=True)
+        if sort != "watched":  # titles with a real poster (TMDB) first, the ones without at the end, same order
+            items = [t for t in items if t["poster"]] + [t for t in items if not t["poster"]]
         counts = {"all": len(items), "series": sum(1 for t in items if t["kind"] == "series")}
         counts["movie"] = counts["all"] - counts["series"]
         if kind in ("series", "movie"):
@@ -382,7 +384,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         def pick(g: str) -> list[dict]:
             cands = [t for t in items if g in t["genres"] and t["id"] not in shown
                      and not (t["media_count"] and t["watched_count"] >= t["media_count"])]
-            cands.sort(key=lambda t: (t["watched_count"] == 0 and not t["poster"],  # pictures first
+            cands.sort(key=lambda t: (not t["poster"],  # pictures first
                                       -(t["rating"] or 0) + ((t["id"] * 7919 + day) % 13) / 10))
             return [card(t) for t in cands[:20]]
 

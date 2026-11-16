@@ -187,3 +187,17 @@ def test_home_featured_pictures(client):
                      size=1, mime="video/mp4", duration=6000, width=1, height=1, added_at=1000)
     feat = client.get("/api/home").json()["featured"]
     assert sorted(t["name"] for t in feat) == ["חדש", "מצוין"] and all(t["play_id"] for t in feat)
+
+
+def test_titles_with_posters_come_first(client):
+    login(client)
+    db = client.app.state.db
+    for i, (name, poster) in enumerate([("עם פוסטר ישן", "p.jpg"), ("בלי פוסטר", None), ("עם פוסטר חדש", "p.jpg")]):
+        tid = db.get_or_create_title("movie", name, name, 2000 + i)
+        db.update_title(tid, poster=poster)
+        db.add_media(chat_id=-100, msg_id=950 + i, title_id=tid, season=None, episode=None, file_name="", caption="",
+                     size=1, mime="video/mp4", duration=6000, width=1, height=1, added_at=1000)
+    names = [t["name"] for t in client.get("/api/library?kind=movie").json()["titles"]]
+    assert names == ["עם פוסטר חדש", "עם פוסטר ישן", "בלי פוסטר"]
+    names = [t["name"] for t in client.get("/api/library?kind=movie&sort=year").json()["titles"]]
+    assert names[-1] == "בלי פוסטר"
