@@ -395,7 +395,36 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if len(rows) >= 4:
                 break
         return ok({"new": [card(t) for t in fresh[:20]], "genres": rows, "personal": based_on_you,
-                   "watchlist": watchlist_cards()[:20]})
+                   "watchlist": watchlist_cards()[:20], "featured": featured(items, day)})
+
+    def featured(items: list[dict], day: int) -> list[dict]:
+        """The big swipeable pictures at the top of the home page: new and highly rated titles that have a wide
+        picture, not finished yet (not started first). A different pick every day."""
+        import random
+
+        this_year = time.localtime().tm_year
+        scored = []
+        for t in items:
+            if not t["backdrop"] or (t["media_count"] and t["watched_count"] >= t["media_count"]):
+                continue
+            year = t.get("last_year") or t["year"] or 0
+            rating = t["rating"] or 0
+            recent = year >= this_year - 1
+            if rating < 7 and not (recent and rating >= 6):
+                continue
+            score = rating + (1.5 if recent else 0.7 if year >= this_year - 3 else 0) - (1 if t["last_watched"] else 0)
+            scored.append((score, t))
+        scored.sort(key=lambda x: -x[0])
+        pool = [t for _, t in scored[:24]]
+        random.Random(day).shuffle(pool)
+        out = []
+        for t in pool[:8]:
+            c = card(t)
+            point = db.resume_point(t["id"])
+            c["play_id"] = point["media"]["id"] if point else t["first_media_id"]
+            c["recent"] = (t.get("last_year") or t["year"] or 0) >= this_year - 1
+            out.append(c)
+        return out
 
     def watchlist_cards() -> list[dict]:
         by_id = {t["id"]: t for t in db.library_titles()}

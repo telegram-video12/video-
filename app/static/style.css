@@ -491,6 +491,16 @@ body.pl-fs { overflow: hidden; }
 .genre-tile span { color: var(--muted); font-size: 12px; }
 .hid-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .hid-row:last-child { border-bottom: 0; }
+/* home: swipeable top pictures */
+.car { position: relative; margin: 0 calc(-1 * var(--gutter)) 22px; }
+.car-track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain; }
+.car-track::-webkit-scrollbar { display: none; }
+.car-track > .banner { flex: 0 0 100%; scroll-snap-align: start; scroll-snap-stop: always; margin: 0; }
+.car-dots { position: absolute; bottom: 8px; left: 0; right: 0; display: flex; justify-content: center; gap: 6px; z-index: 2; pointer-events: none; }
+.car-dots button { pointer-events: auto; width: 7px; height: 7px; padding: 0; border: 0; border-radius: 4px; background: rgba(255, 255, 255, .4); cursor: pointer; transition: width .2s, background .2s; }
+.car-dots button.on { width: 20px; background: var(--gold); }
+.car-arrow { display: none; }
+.car .banner-text { padding-bottom: 34px; }
 .home-foot { text-align: center; margin: 26px 0 8px; }
 /* ---------- possible duplicates ---------- */
 .dup { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 10px; background: var(--s2); }
@@ -544,6 +554,12 @@ body.pl-fs { overflow: hidden; }
   .phead h1 { font-size: 32px; }
 
   /* home */
+  .car-arrow { display: grid; place-items: center; position: absolute; top: 50%; transform: translateY(-50%); z-index: 3; width: 44px; height: 44px;
+    border-radius: 50%; border: 0; background: rgba(0, 0, 0, .45); color: #fff; font-size: 26px; cursor: pointer; opacity: 0; transition: opacity .2s; }
+  .car:hover .car-arrow { opacity: 1; }
+  .car-arrow.next { left: 16px; }
+  .car-arrow.prev { right: 16px; }
+  .car-dots { bottom: 16px; }
   .banner { min-height: clamp(420px, min(34vw, 66vh), 720px); margin-top: -1px; align-items: center; }
   .banner::after { background: linear-gradient(to top, var(--bg) 2%, rgba(10, 11, 15, .25) 45%, rgba(10, 11, 15, .1)),
                                 linear-gradient(to left, rgba(10, 11, 15, .92) 0%, rgba(10, 11, 15, .55) 38%, transparent 68%); }

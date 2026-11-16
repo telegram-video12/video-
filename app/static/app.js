@@ -119,6 +119,7 @@ const count = (x, one, many) => (Number(x) === 1 ? one : `${n(x)} ${many}`);
 
 // ---------------------------------------------------------------------- home
 async function pageHome() {
+  if (cleanup) { cleanup(); cleanup = null; }  // drawn again (e.g. after arranging the rows): stop the old slideshow
   const head = pageHeader('', '', {logo: true, dice: ''});
   if (!libraryCache) $app.innerHTML = head + skeletonRows();
   const [all, series, movies, extra, newMovies, newSeries] = await Promise.all([
@@ -134,6 +135,7 @@ async function pageHome() {
   const cont = all.continue || [];
   const fresh = [...series.titles, ...movies.titles].find((t) => t.backdrop);
   const top = cont[0] || (fresh ? {title: fresh} : null);
+  const feat = extra.featured || [];
   const posterRow = (list) => `<div class="hrow">${list.map(posterCard).join('')}</div>`;
   // the rows, in Netflix-like order; each one can be hidden with "סידור דף הבית" (remembered on this device)
   const rows = [
@@ -147,7 +149,7 @@ async function pageHome() {
     ['recentMovies', 'סרטים שנוספו לאחרונה', () => movies.titles.length && rowSection('סרטים שנוספו לאחרונה', '#/movies', posterRow(movies.titles))],
   ];
   const hidden = new Set(store.get('home:hidden', []));
-  $app.innerHTML = head + (top ? banner(top) : '') +
+  $app.innerHTML = head + (feat.length ? carousel(feat) : top ? banner(top) : '') +
     rows.filter(([k]) => !hidden.has(k)).map(([, , html]) => html() || '').join('') +
     '<div class="home-foot"><button class="linkbtn" id="home-rows">⚙ סידור דף הבית</button></div>';
   $app.querySelector('#home-rows').onclick = async () => {
@@ -158,6 +160,36 @@ async function pageHome() {
     store.set('home:hidden', rows.map(([k]) => k).filter((k) => !pick.includes(k)));
     pageHome();
   };
+  if (feat.length > 1) cleanup = startCarousel($app.querySelector('.car'));
+}
+
+// the swipeable pictures at the top of the home page
+function carousel(list) {
+  return `<section class="car"><div class="car-track">${list.map((t) => banner({title: t, media: {id: t.play_id}},
+      t.recent ? '🆕 חדש' : '⭐ מומלץ')).join('')}</div>
+    ${list.length > 1 ? `<div class="car-dots">${list.map((_, i) => `<button data-i="${i}" class="${i ? '' : 'on'}" aria-label="תמונה ${i + 1}"></button>`).join('')}</div>
+    <button class="car-arrow next" aria-label="הבא">‹</button><button class="car-arrow prev" aria-label="הקודם">›</button>` : ''}</section>`;
+}
+
+function startCarousel(car) {
+  const track = car.querySelector('.car-track');
+  const slides = [...track.children];
+  const dots = [...car.querySelectorAll('.car-dots button')];
+  const sign = getComputedStyle(track).direction === 'rtl' ? -1 : 1;  // right-to-left: scrolling goes negative
+  const current = () => Math.round(Math.abs(track.scrollLeft) / (track.clientWidth || 1));
+  const go = (i) => track.scrollTo({left: sign * ((i + slides.length) % slides.length) * track.clientWidth, behavior: 'smooth'});
+  track.addEventListener('scroll', () => {
+    const i = current();
+    dots.forEach((d, k) => d.classList.toggle('on', k === i));
+  }, {passive: true});
+  let auto = setInterval(() => { if (!document.hidden) go(current() + 1); }, 7000);
+  const stop = () => { clearInterval(auto); auto = null; };  // once you touch it, it stays where you left it
+  track.addEventListener('pointerdown', stop, {passive: true});
+  track.addEventListener('touchstart', stop, {passive: true});
+  dots.forEach((d, i) => d.onclick = () => { stop(); go(i); });
+  car.querySelector('.car-arrow.next')?.addEventListener('click', () => { stop(); go(current() + 1); });
+  car.querySelector('.car-arrow.prev')?.addEventListener('click', () => { stop(); go(current() - 1); });
+  return () => clearInterval(auto);
 }
 
 function rowSection(title, more, body) {
@@ -173,7 +205,7 @@ document.addEventListener('click', (e) => {
   row.scrollBy({left: -Number(b.dataset.scroll) * row.clientWidth * 0.9, behavior: 'smooth'});
 });
 
-function banner(item) {
+function banner(item, kicker = '') {
   // the big picture at the top of the home page: what you are watching, or something new
   const t = item.title, m = item.media;
   const pic = t.backdrop || t.poster || (m && m.thumb);
@@ -184,7 +216,7 @@ function banner(item) {
   return `<section class="banner${pic ? '' : ' banner-noimg'}">
     <div class="banner-img">${pic ? img(pic) : ''}</div>
     <div class="banner-text">
-      <div class="kicker">${resume ? '▶ המשך מאיפה שעצרת' : '✨ חדש בספרייה'}</div>
+      <div class="kicker">${kicker || (resume ? '▶ המשך מאיפה שעצרת' : '✨ חדש בספרייה')}</div>
       <h1>${esc(t.name)}</h1>
       ${facts ? `<div class="facts">${facts}</div>` : ''}
       ${t.overview ? `<p class="ov">${esc(t.overview)}</p>` : ''}

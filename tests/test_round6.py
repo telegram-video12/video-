@@ -174,3 +174,16 @@ def test_cast_link_works_for_the_tv_only(client, monkeypatch):
     assert client.get(path.split("?")[0] + "?t=1.bad", headers={"Range": "bytes=0-9"}).status_code == 403
     other = path.replace(f"/api/stream/{mid}", f"/api/stream/{mid + 1}")
     assert client.get(other, headers={"Range": "bytes=0-9"}).status_code == 403  # a key opens one video only
+
+
+def test_home_featured_pictures(client):
+    login(client)
+    db = client.app.state.db
+    for i, (name, rating, backdrop, year) in enumerate([("מצוין", 8.1, "b.jpg", 2010), ("חדש", 6.4, "b.jpg", 2099),
+                                                        ("חלש", 5.0, "b.jpg", 2010), ("בלי תמונה", 9.0, None, 2010)]):
+        tid = db.get_or_create_title("movie", name, name, year)
+        db.update_title(tid, rating=rating, backdrop=backdrop)
+        db.add_media(chat_id=-100, msg_id=900 + i, title_id=tid, season=None, episode=None, file_name="", caption="",
+                     size=1, mime="video/mp4", duration=6000, width=1, height=1, added_at=1000)
+    feat = client.get("/api/home").json()["featured"]
+    assert sorted(t["name"] for t in feat) == ["חדש", "מצוין"] and all(t["play_id"] for t in feat)
