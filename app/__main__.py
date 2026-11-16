@@ -24,11 +24,15 @@ def lan_address() -> str | None:
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000") or 8000)
-    # 127.0.0.1 = reachable only from this device. HOST=0.0.0.0 also lets other devices on the Wi-Fi in.
-    host = os.getenv("HOST", "127.0.0.1")
+    # HOST=0.0.0.0: other devices on the Wi-Fi may open the site (the computer).
+    # Not set (the phone): the site still listens on the Wi-Fi, but ONLY a TV that was handed a video
+    # (Chromecast, with a one-time key) gets an answer; everything else from outside is refused.
+    host = os.getenv("HOST") or "0.0.0.0"
+    if not os.getenv("HOST"):
+        os.environ["LOCAL_ONLY"] = "1"
     url = f"http://localhost:{port}"
     print(f"\n  *** The site is running! Open in the browser: {url}")
-    if host == "0.0.0.0" and lan_address():
+    if os.getenv("HOST") == "0.0.0.0" and lan_address():
         print(f"  From your phone (same Wi-Fi): http://{lan_address()}:{port}")
     print("  To stop: CTRL+C (or close this window)\n")
     if os.getenv("NO_BROWSER") != "1":

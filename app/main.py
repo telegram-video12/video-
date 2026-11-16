@@ -80,13 +80,21 @@ def telegram_error_message(e: Exception) -> str:
 class AuthMiddleware:
     """Pure ASGI middleware (keeps video streaming efficient)."""
 
-    def __init__(self, app, settings: Settings, valid_token):
-        self.app, self.settings, self.valid_token = app, settings, valid_token
+    def __init__(self, app, settings: Settings, valid_token, valid_cast=None):
+        self.app, self.settings, self.valid_token, self.valid_cast = app, settings, valid_token, valid_cast
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         path = scope["path"]
+        cast_ok = (path.startswith("/api/stream/") and self.valid_cast
+                   and self.valid_cast(path, Request(scope).query_params.get("t")))
+        client = (scope.get("client") or ("127.0.0.1", 0))[0]
+        if os.getenv("LOCAL_ONLY") == "1" and not cast_ok and client not in ("127.0.0.1", "::1", "localhost"):
+            # the phone: nobody else on the Wi-Fi may open the site, only a TV playing a video you sent it
+            return await JSONResponse({"detail": "forbidden"}, status_code=403)(scope, receive, send)
+        if cast_ok:
+            return await self.app(scope, receive, send)
         if path in PUBLIC_PATHS or path.startswith("/static/"):
             return await self.app(scope, receive, send)
         if True:  # note slow answers in the window, to find what makes a page slow
@@ -122,6 +130,28 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
     def make_token() -> str:
         exp = str(int(time.time()) + SESSION_DAYS * 86400)
         return f"{exp}.{hmac.new(secret, exp.encode(), hashlib.sha256).hexdigest()}"
+
+    def cast_token(media_id: int) -> str:
+        """A key for ONE video, valid 12 hours: the TV (Chromecast) has no login, it gets this instead."""
+        exp = str(int(time.time()) + 12 * 3600)
+        return f"{exp}.{hmac.new(secret, f'cast:{media_id}:{exp}'.encode(), hashlib.sha256).hexdigest()[:32]}"
+
+    def valid_cast(path: str, token: str | None) -> bool:
+        m = re.fullmatch(r"/api/stream/(\d+)", path)
+        if not m or not token or "." not in token:
+            return False
+        exp, sig = token.split(".", 1)
+        good = hmac.new(secret, f"cast:{m.group(1)}:{exp}".encode(), hashlib.sha256).hexdigest()[:32]
+        return hmac.compare_digest(sig, good) and exp.isdigit() and int(exp) > time.time()
+
+    def lan_ip() -> str | None:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+                sk.connect(("10.255.255.255", 1))
+                ip = sk.getsockname()[0]
+            return None if ip.startswith("127.") else ip
+        except OSError:
+            return None
 
     def valid_token(token: str | None) -> bool:
         if not token or "." not in token:
@@ -598,7 +628,11 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             m = dict(m, position=last["position"], completed=max(v["completed"] or 0 for v in watched))
         t = db.get_title(m["title_id"])
         info = await episode_names(t, wait=3)
+        ip = lan_ip()  # the address a TV on the same Wi-Fi uses to fetch this video (Chromecast)
+        cast_url = (f"http://{ip}:{request.url.port or os.getenv('PORT', '8000')}/api/stream/{m['id']}?t={cast_token(m['id'])}"
+                    if ip else None)
         return ok({
+            "cast_url": cast_url,
             "media": media_out(with_names(dict(m), info)),
             "title": t,
             "prev": media_out(with_names(dict(prev), info)) if prev else None,
@@ -1039,6 +1073,6 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={ApiError: api_error, Exception: server_error})
-    app.add_middleware(AuthMiddleware, settings=settings, valid_token=valid_token)
+    app.add_middleware(AuthMiddleware, settings=settings, valid_token=valid_token, valid_cast=valid_cast)
     app.state.db, app.state.tg, app.state.scanner, app.state.settings = db, tg, scanner, settings
     return app

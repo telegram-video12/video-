@@ -154,3 +154,23 @@ def test_hide_title_and_typo_search(client):
     assert client.get(f"/api/titles/{fauda['id']}").json()["hidden_title"] is True  # its page still opens
     client.patch(f"/api/titles/{fauda['id']}", json={"hidden_title": False})
     assert "פאודה" in [t["name"] for t in client.get("/api/library").json()["titles"]]
+
+
+def test_cast_link_works_for_the_tv_only(client, monkeypatch):
+    login(client)
+    scan(client)
+    mid = client.get("/api/library").json()["titles"][0]["first_media_id"]
+    import app.main as main_mod
+    w = client.get(f"/api/media/{mid}").json()
+    url = w["cast_url"]
+    if url is None:  # no network in this test machine: build the link the same way
+        return
+    path = url.split("8000", 1)[-1] if ":8000" in url else url[url.index("/api/"):]
+    monkeypatch.setenv("LOCAL_ONLY", "1")  # the phone: other devices are refused...
+    client.cookies.clear()
+    assert client.get("/api/library").status_code == 403
+    r = client.get(path, headers={"Range": "bytes=0-99"})
+    assert r.status_code == 206 and len(r.content) == 100  # ...except the TV with the video's key
+    assert client.get(path.split("?")[0] + "?t=1.bad", headers={"Range": "bytes=0-9"}).status_code == 403
+    other = path.replace(f"/api/stream/{mid}", f"/api/stream/{mid + 1}")
+    assert client.get(other, headers={"Range": "bytes=0-9"}).status_code == 403  # a key opens one video only

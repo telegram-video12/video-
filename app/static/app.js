@@ -984,7 +984,7 @@ function bindEditTitle(t) {
 // -------------------------------------------------------------------- watch
 async function pageWatch(id) {
   $app.innerHTML = '<div class="spinner"></div>';
-  const {media: m, title: t, prev, next, versions} = await api(`/api/media/${id}`);
+  const {media: m, title: t, prev, next, versions, cast_url: castUrl} = await api(`/api/media/${id}`);
   const isSeries = t.kind === 'series' && m.episode != null;
   document.title = `${t.name}${isSeries ? ' · ' + epLabel(m) : ''}`;
   const sub = isSeries ? epLong(m) + (m.ep_name ? ' · ' + m.ep_name : '') : '';
@@ -993,6 +993,7 @@ async function pageWatch(id) {
     <div class="player-wrap show-ui paused" id="pw">
       <video id="v" playsinline autopictureinpicture preload="metadata" src="/api/stream/${m.id}"></video>
       <div class="pl-spin"><div class="spinner"></div></div>
+      <div class="pl-castnote">📺 משודר לטלוויזיה</div>
       <div class="pl-flash" id="flash"></div>
       <button class="pl-big" data-a="play" aria-label="נגן">▶</button>
       <div class="pl-top">
@@ -1014,6 +1015,7 @@ async function pageWatch(id) {
           <button class="pl-btn pl-txt" data-a="sleep" id="sleepbtn" title="שעון שינה">🌙</button>
           <button class="pl-btn pl-txt" data-a="speed" id="speedbtn" title="מהירות">1x</button>
           ${isSeries ? '<button class="pl-btn" data-a="intro" title="הגדרת הפתיחה של הסדרה">⚙</button>' : ''}
+          ${'remote' in HTMLMediaElement.prototype ? `<button class="pl-btn pl-cast" data-a="cast" aria-label="שידור לטלוויזיה" title="שידור לטלוויזיה"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zm20-7H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg></button>` : ''}
           ${document.pictureInPictureEnabled ? '<button class="pl-btn" data-a="pip" aria-label="חלון צף" title="חלון צף">⧉</button>' : ''}
           <button class="pl-btn" data-a="fs" aria-label="מסך מלא">⛶</button>
         </div>
@@ -1244,6 +1246,17 @@ async function pageWatch(id) {
     msSet('previoustrack', prev ? () => { location.hash = `#/watch/${prev.id}`; } : null);
     msSet('nexttrack', next ? () => { location.hash = `#/watch/${next.id}`; } : null);
   }
+  // casting: show it on the player
+  if (v.remote) {
+    const castState = () => {
+      const on = v.remote.state !== 'disconnected';
+      wrap.classList.toggle('casting', on);
+      wrap.querySelector('.pl-cast')?.classList.toggle('on', on);
+    };
+    v.remote.onconnecting = castState;
+    v.remote.onconnect = () => { castState(); toast('📺 משודר לטלוויזיה. הפלאפון הוא השלט', 4000); };
+    v.remote.ondisconnect = castState;
+  }
   const msPosition = () => {
     if (!ms || !ms.setPositionState || !isFinite(v.duration) || !v.duration) return;
     try { ms.setPositionState({duration: v.duration, playbackRate: v.playbackRate, position: Math.min(v.currentTime, v.duration)}); } catch (_) {}
@@ -1335,6 +1348,19 @@ async function pageWatch(id) {
     next: () => { location.hash = `#/watch/${next.id}`; },
     mute: () => { v.muted = !v.muted; if (!v.muted && v.volume === 0) v.volume = 0.5; },
     fs: () => toggleFs(),
+    cast: () => {  // send the video to the TV (Chromecast); the TV fetches it straight from this site over the Wi-Fi
+      if (!castUrl) { toast('כדי לשדר לטלוויזיה, הפלאפון צריך להיות מחובר ל-Wi-Fi של הבית', 4000); return; }
+      if (v.remote && v.remote.state !== 'disconnected') { v.remote.prompt().catch(() => {}); return; }
+      if (!v.src.includes('?t=')) {  // an address the TV can open (with a one-time key instead of your login)
+        const at = v.currentTime, playing = !v.paused;
+        v.src = castUrl;
+        v.addEventListener('loadedmetadata', () => { v.currentTime = at; if (playing) v.play().catch(() => {}); }, {once: true});
+      }
+      v.remote.prompt().catch((e) => {
+        if (e && e.name === 'NotFoundError') toast('לא נמצאה טלוויזיה לשידור. בדוק שהטלוויזיה דלוקה ובאותה רשת Wi-Fi', 5000);
+        else if (e && e.name !== 'AbortError') toast('השידור לא זמין כרגע בדפדפן הזה', 4000);
+      });
+    },
     pip: () => {  // small floating window that stays on top of other apps
       if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
       else v.requestPictureInPicture().catch(() => toast('החלון הצף לא זמין כרגע בדפדפן הזה', 3000));
