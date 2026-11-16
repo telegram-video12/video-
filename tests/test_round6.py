@@ -138,3 +138,19 @@ def test_episode_names_from_tmdb_and_switch_off(client, monkeypatch):
     client.patch(f"/api/titles/{fauda['id']}", json={"ep_names_off": True})
     d = client.get(f"/api/titles/{fauda['id']}").json()
     assert d["ep_names_off"] and all(m["ep_name"] is None for m in d["media"])
+
+
+def test_hide_title_and_typo_search(client):
+    login(client)
+    scan(client)
+    lib = client.get("/api/library").json()["titles"]
+    fauda = next(t for t in lib if t["name"] == "פאודה")
+    # spelling without/with ו-י, and one wrong letter
+    assert [t["name"] for t in client.get("/api/library?q=פאדה").json()["titles"]] == ["פאודה"]
+    assert "Inception" in [t["name"] for t in client.get("/api/library?q=Inseption").json()["titles"]]
+    client.patch(f"/api/titles/{fauda['id']}", json={"hidden_title": True})
+    assert "פאודה" not in [t["name"] for t in client.get("/api/library").json()["titles"]]
+    assert [t["name"] for t in client.get("/api/hidden").json()["titles"]] == ["פאודה"]
+    assert client.get(f"/api/titles/{fauda['id']}").json()["hidden_title"] is True  # its page still opens
+    client.patch(f"/api/titles/{fauda['id']}", json={"hidden_title": False})
+    assert "פאודה" in [t["name"] for t in client.get("/api/library").json()["titles"]]

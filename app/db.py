@@ -132,7 +132,8 @@ class Database:
                          ("original_name", "TEXT"), ("tmdb_details", "INTEGER NOT NULL DEFAULT 0"),
                          ("intro_start", "REAL"), ("intro_end", "REAL"),  # where the opening song is (per series)
                          ("last_year", "INTEGER"),  # series: the year of its latest episode (TMDB)
-                         ("name_manual", "INTEGER NOT NULL DEFAULT 0")):  # you renamed it: TMDB keeps out
+                         ("name_manual", "INTEGER NOT NULL DEFAULT 0"),  # you renamed it: TMDB keeps out
+                         ("hidden_title", "INTEGER NOT NULL DEFAULT 0")):  # you hid it from the library
             if col not in tcols:  # TMDB details (genres, rating, length, cast)
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
@@ -288,7 +289,7 @@ class Database:
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked",
                    "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details",
-                   "intro_start", "intro_end", "last_year", "name_manual"}
+                   "intro_start", "intro_end", "last_year", "name_manual", "hidden_title"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -336,7 +337,7 @@ class Database:
         c = self._titles_cache
         if (not c or c[0] != self.version
                 or (c[1] != self.soft_version and time.time() - c[2] > 10)):
-            from .parser import normalize
+            from .parser import normalize, skeleton
 
             rows = self.list_titles()
             fresh = self.new_episodes()
@@ -344,6 +345,7 @@ class Database:
                 t["new_count"], t["new_at"] = fresh.get(t["id"], (0, None))  # search keys and parsed genres, computed once per change
                 t["_key"] = normalize(t["name"] or "")
                 t["_okey"] = normalize(t["original_name"] or "")
+                t["_skel"] = skeleton(t["_key"])
                 try:
                     t["genres"] = json.loads(t["genres"] or "[]")
                 except ValueError:
@@ -389,6 +391,7 @@ class Database:
             FROM titles t
             JOIN media m ON m.title_id = t.id AND m.hidden = 0
             LEFT JOIN progress p ON p.media_id = m.id
+            WHERE t.hidden_title = 0
             GROUP BY t.id
             ORDER BY last_in DESC  -- newest in YOUR library first (not by the date it was posted on Telegram)
             """
@@ -688,6 +691,9 @@ class Database:
         out = []
         for row in rows:
             if hidden.get(str(row["title_id"]), 0) >= row["last"]:
+                continue
+            tt = self.get_title(row["title_id"])
+            if tt and tt.get("hidden_title"):
                 continue
             point = self.resume_point(row["title_id"])
             if not point or point["state"] == "done":

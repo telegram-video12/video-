@@ -28,7 +28,7 @@ from . import crypto_boost
 from .config import Settings
 from .db import Database, quality_of
 from .library import possible_duplicates
-from .parser import normalize
+from .parser import fuzzy_contains, normalize, skeleton
 from .telegram import Scanner, TelegramService
 from .tmdb import TMDB
 
@@ -267,7 +267,13 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         limit = min(200, max(1, int(qp.get("limit", 60) or 60)))
         items = db.library_titles()
         if q:  # Hebrew name or the original (TMDB) name: "Spider" finds "ספיידרמן"
-            items = [t for t in items if q in t["_key"] or (t["_okey"] and q in t["_okey"])]
+            sk = skeleton(q)
+            found = [t for t in items if q in t["_key"] or (t["_okey"] and q in t["_okey"]) or (len(sk) >= 3 and sk in t["_skel"])]
+            if len(found) < 3 and len(q) >= 4:  # small typo: one letter wrong, missing or extra
+                seen = {t["id"] for t in found}
+                found += [t for t in items if t["id"] not in seen
+                          and (fuzzy_contains(q, t["_key"]) or (t["_okey"] and fuzzy_contains(q, t["_okey"])))]
+            items = found
         genres = [g for g in qp.get("genres", "").split(",") if g]
         if genres:  # any of the chosen genres
             items = [t for t in items if any(g in t["genres"] for g in genres)]
@@ -401,6 +407,11 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         db.set_watchlist(title_id, on)
         return ok({"on": on})
 
+    async def hidden_titles(request: Request):
+        """Series and movies you hid from the library (Settings lets you show them again)."""
+        rows = db.q("SELECT id, kind, name, year, poster FROM titles WHERE hidden_title = 1 ORDER BY name")
+        return ok({"titles": rows})
+
     async def continue_hide(request: Request):
         """Remove a title from "continue watching" (it comes back when you watch it again)."""
         data = await body(request)
@@ -489,6 +500,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "in_list": title_id in db.watchlist_ids(),
             "ep_names": t["kind"] == "series" and bool(t.get("tmdb_id")),
             "ep_names_off": title_id in names_off(),
+            "hidden_title": bool(t.get("hidden_title")),
             "season_labels": db.season_labels(title_id),
             "media": items,
             "resume": {"media": media_out(resume["media"]), "position": resume["position"], "state": resume["state"]}
@@ -513,6 +525,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             fields["overview"] = payload["overview"]
         if "poster" in payload:
             fields["poster"] = payload["poster"] or None
+        if "hidden_title" in payload:  # hide from the whole library (or show again)
+            fields["hidden_title"] = 1 if payload["hidden_title"] else 0
         if "ep_names_off" in payload:
             off = names_off()
             off.add(title_id) if payload["ep_names_off"] else off.discard(title_id)
@@ -1006,7 +1020,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/library", library), R("/api/genres", genres_list), R("/api/home", home_rows), R("/api/random", random_pick),
         R("/api/mylist", my_list), R("/api/watchlist/{id:int}", watchlist_set, methods=["POST"]),
         R("/api/history/hide", history_hide, methods=["POST"]),
-        R("/api/continue/hide", continue_hide, methods=["POST"]),
+        R("/api/continue/hide", continue_hide, methods=["POST"]), R("/api/hidden", hidden_titles),
         R("/api/duplicates", duplicates), R("/api/duplicates/dismiss", duplicates_dismiss, methods=["POST"]),
         R("/api/watched-many", watched_many, methods=["POST"]),
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),

@@ -127,6 +127,34 @@ def normalize(name: str) -> str:
     return words(name).replace(" ", "")
 
 
+def skeleton(key: str) -> str:
+    """A normalized name without the letters Hebrew spelling adds or drops (ו, י, א, ה) after the first letter:
+    "ספידרמן" and "ספיידרמן", "שטיסל" and "שטיסל" match. Used only for search."""
+    return key[:1] + re.sub(r"[ויאה]", "", key[1:]) if key else ""
+
+
+def _within_one_edit(q: str, text: str) -> bool:
+    """Is q inside text with at most one wrong, missing or extra letter? (approximate substring search)"""
+    n = len(q)
+    prev = [0] * (len(text) + 1)  # a match may start anywhere in text
+    for i in range(1, n + 1):
+        cur = [i] + [0] * len(text)
+        qi = q[i - 1]
+        for j in range(1, len(text) + 1):
+            cur[j] = min(prev[j - 1] + (qi != text[j - 1]), prev[j] + 1, cur[j - 1] + 1)
+        prev = cur
+    return min(prev) <= 1
+
+
+def fuzzy_contains(q: str, key: str) -> bool:
+    if len(q) < 4 or len(key) < len(q) - 1:
+        return False
+    letters = set(q)
+    if sum(ch in key for ch in letters) < len(letters) - 1:  # quick check before the slower comparison
+        return False
+    return _within_one_edit(q, key)
+
+
 def _first_meaningful_line(caption: str) -> str:
     for line in caption.splitlines():
         if re.search(r"[\wא-ת]", line):

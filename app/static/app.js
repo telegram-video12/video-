@@ -135,15 +135,29 @@ async function pageHome() {
   const fresh = [...series.titles, ...movies.titles].find((t) => t.backdrop);
   const top = cont[0] || (fresh ? {title: fresh} : null);
   const posterRow = (list) => `<div class="hrow">${list.map(posterCard).join('')}</div>`;
+  // the rows, in Netflix-like order; each one can be hidden with "סידור דף הבית" (remembered on this device)
+  const rows = [
+    ['cont', 'המשך צפייה', () => cont.length && rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`)],
+    ['new', '✨ פרקים חדשים', () => extra.new.length && rowSection('✨ פרקים חדשים', '', posterRow(extra.new))],
+    ['watch', '⭐ לצפות בהמשך', () => (extra.watchlist || []).length && rowSection('⭐ לצפות בהמשך', '#/mylist', posterRow(extra.watchlist))],
+    ['newSeries', '📺 סדרות חדשות', () => newSeries.titles.length && rowSection('📺 סדרות חדשות', '', posterRow(newSeries.titles))],
+    ['newMovies', '🎬 סרטים חדשים', () => newMovies.titles.length && rowSection('🎬 סרטים חדשים', '', posterRow(newMovies.titles))],
+    ['genres', 'שורות לפי ז\'אנרים', () => extra.genres.slice(0, 3).map((r) => rowSection(extra.personal ? `כי אתה אוהב ${r.genre}` : r.genre, '', posterRow(r.titles))).join('')],
+    ['recentSeries', 'סדרות שנוספו לאחרונה', () => series.titles.length && rowSection('סדרות שנוספו לאחרונה', '#/series', posterRow(series.titles))],
+    ['recentMovies', 'סרטים שנוספו לאחרונה', () => movies.titles.length && rowSection('סרטים שנוספו לאחרונה', '#/movies', posterRow(movies.titles))],
+  ];
+  const hidden = new Set(store.get('home:hidden', []));
   $app.innerHTML = head + (top ? banner(top) : '') +
-    (cont.length ? rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`) : '') +
-    (extra.new.length ? rowSection('✨ פרקים חדשים', '', posterRow(extra.new)) : '') +
-    ((extra.watchlist || []).length ? rowSection('⭐ לצפות בהמשך', '#/mylist', posterRow(extra.watchlist)) : '') +
-    (newMovies.titles.length ? rowSection('🎬 סרטים חדשים', '', posterRow(newMovies.titles)) : '') +
-    (newSeries.titles.length ? rowSection('📺 סדרות חדשות', '', posterRow(newSeries.titles)) : '') +
-    extra.genres.map((r) => rowSection(extra.personal ? `כי אתה אוהב ${r.genre}` : r.genre, '', posterRow(r.titles))).join('') +
-    (series.titles.length ? rowSection('סדרות שנוספו לאחרונה', '#/series', `<div class="hrow">${series.titles.map(posterCard).join('')}</div>`) : '') +
-    (movies.titles.length ? rowSection('סרטים שנוספו לאחרונה', '#/movies', `<div class="hrow">${movies.titles.map(posterCard).join('')}</div>`) : '');
+    rows.filter(([k]) => !hidden.has(k)).map(([, , html]) => html() || '').join('') +
+    '<div class="home-foot"><button class="linkbtn" id="home-rows">⚙ סידור דף הבית</button></div>';
+  $app.querySelector('#home-rows').onclick = async () => {
+    const shown = rows.filter(([k]) => !hidden.has(k)).map(([k]) => k);
+    const pick = await multiSheet('אילו שורות להציג בדף הבית?', rows.map(([k, label]) => [k, label]), shown,
+      'מה שתסיר לא נמחק: הוא פשוט לא מוצג בדף הבית של המכשיר הזה.');
+    if (!pick) return;
+    store.set('home:hidden', rows.map(([k]) => k).filter((k) => !pick.includes(k)));
+    pageHome();
+  };
 }
 
 function rowSection(title, more, body) {
@@ -455,22 +469,52 @@ async function pageSearch(st) {
   let timer = null, saveTimer = null, token = 0;
   const recent = () => store.get('recent-searches', []);
   const remember = (q) => store.set('recent-searches', [q, ...recent().filter((x) => x !== q)].slice(0, 8));
-  const showRecent = () => {
+  let genreList = null;
+  const showRecent = async () => {
+    // nothing typed yet: recent searches + genres to browse
     const r = recent();
-    out.innerHTML = r.length
-      ? `<div class="rsec-head"><h2>חיפושים אחרונים</h2><a href="javascript:void 0" id="clear-recent">נקה</a></div>
-         <div class="chips wrap">${r.map((q) => `<button class="tab" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>`
-      : '<p class="muted center">הקלד שם של סדרה או סרט</p>';
-    out.querySelectorAll('[data-q]').forEach((b) => b.onclick = () => { input.value = b.dataset.q; run(); });
-    const c = out.querySelector('#clear-recent');
-    if (c) c.onclick = () => { store.set('recent-searches', []); showRecent(); };
+    const draw = () => {
+      out.innerHTML = (r.length
+        ? `<div class="rsec-head"><h2>חיפושים אחרונים</h2><a href="javascript:void 0" id="clear-recent">נקה</a></div>
+           <div class="chips wrap">${r.map((q) => `<button class="tab" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>`
+        : '<p class="muted center">הקלד שם של סדרה או סרט</p>') +
+        (genreList && genreList.length ? `<div class="rsec-head"><h2>לפי ז'אנר</h2></div>
+           <div class="genre-grid">${genreList.map((g) => `<button class="genre-tile" data-g="${esc(g.name)}"><b>${esc(g.name)}</b><span>${n(g.count)}</span></button>`).join('')}</div>` : '');
+      out.querySelectorAll('[data-q]').forEach((b) => b.onclick = () => { input.value = b.dataset.q; run(); });
+      out.querySelectorAll('[data-g]').forEach((b) => b.onclick = () => showGenre(b.dataset.g));
+      const c = out.querySelector('#clear-recent');
+      if (c) c.onclick = () => { store.set('recent-searches', []); showRecent(); };
+    };
+    draw();
+    if (!genreList) {
+      try { genreList = (await api('/api/genres')).genres.slice(0, 18); } catch (_) { genreList = []; }
+      if (!input.value.trim() && !st.genre) draw();
+    }
+  };
+  const showGenre = async (g) => {
+    st.genre = g;
+    const my = ++token;
+    out.innerHTML = skeletonGrid();
+    let s, m;
+    try {
+      [s, m] = await Promise.all([
+        api(`/api/library?kind=series&sort=rating&limit=60&nocont=1&genres=${encodeURIComponent(g)}`),
+        api(`/api/library?kind=movie&sort=rating&limit=60&nocont=1&genres=${encodeURIComponent(g)}`),
+      ]);
+    } catch (e) { out.innerHTML = errorBox(e); return; }
+    if (my !== token) return;
+    out.innerHTML = `<div class="rsec-head"><h2>ז'אנר: ${esc(g)}</h2><a href="javascript:void 0" id="genre-back">‹ חזרה</a></div>` +
+      (s.total ? rowSection(`סדרות (${n(s.total)})`, '', `<div class="pgrid">${s.titles.map(posterCard).join('')}</div>`) : '') +
+      (m.total ? rowSection(`סרטים (${n(m.total)})`, '', `<div class="pgrid">${m.titles.map(posterCard).join('')}</div>`) : '');
+    out.querySelector('#genre-back').onclick = () => { st.genre = null; showRecent(); };
   };
   const run = async () => {
     const q = input.value.trim();
     st.q = q;
     const my = ++token;
     clearTimeout(saveTimer);
-    if (!q) { showRecent(); return; }
+    if (!q) { if (st.genre) showGenre(st.genre); else showRecent(); return; }
+    st.genre = null;
     out.innerHTML = skeletonGrid();
     let s, m;
     try {
@@ -782,8 +826,21 @@ async function pageTitle(id) {
   $app.querySelector('#title-menu').onclick = async () => {
     const opts = [['edit', editMode ? '✓ סיום עריכה' : '✏️ עריכת פרטים ופרקים'],
                   ['all', '✓ סמן הכל כנצפה'], ['reset', '↺ אפס התקדמות']];
+    opts.push(['hide', data.hidden_title ? '👁 החזר לספרייה' : `🙈 הסתר את ה${isSeries ? 'סדרה' : 'סרט'} מהספרייה`]);
     if (data.ep_names) opts.push(['names', data.ep_names_off ? '🏷 הצג שמות ותקצירי פרקים מ-TMDB' : '🏷 הסתר שמות פרקים מ-TMDB (אם הם לא מתאימים)']);
     const v = await bottomSheet(t.name, opts, '');
+    if (v === 'hide') {
+      const hide = !data.hidden_title;
+      try { await api(`/api/titles/${t.id}`, {method: 'PATCH', body: {hidden_title: hide}}); } catch (e) { alert(e.message); return; }
+      libraryCache = null;
+      if (!hide) { reload(); return; }
+      undoToast(`"${t.name}" הוסתר. אפשר להחזיר בהגדרות ← מוסתרים`, async () => {
+        await api(`/api/titles/${t.id}`, {method: 'PATCH', body: {hidden_title: false}}).catch(() => {});
+        libraryCache = null;
+      }, 7000);
+      if (route.cameFrom) history.back(); else location.hash = '#/';
+      return;
+    }
     if (v === 'names') {
       try { await api(`/api/titles/${t.id}`, {method: 'PATCH', body: {ep_names_off: !data.ep_names_off}}); } catch (e) { alert(e.message); return; }
       reload();
@@ -1437,7 +1494,7 @@ function telegramPanel(st) {
 }
 
 const SETTINGS_SECTIONS = [['sec-tg', '📡', 'חיבור לטלגרם'], ['sec-chats', '📋', 'קבוצות וערוצים'], ['sec-scan', '🔄', 'סריקה'],
-  ['sec-sync', '🔗', 'סנכרון מכשירים'], ['sec-dups', '👯', 'כפילויות אפשריות'], ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים ותקצירים'], ['sec-pw', '🔒', 'סיסמה ויציאה']];
+  ['sec-sync', '🔗', 'סנכרון מכשירים'], ['sec-dups', '👯', 'כפילויות אפשריות'], ['sec-hidden', '🙈', 'מוסתרים'], ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים ותקצירים'], ['sec-pw', '🔒', 'סיסמה ויציאה']];
 
 async function pageSettings(section) {
   // phone: a menu of topics, each opens on its own screen (#/more/sec-…); computer: all topics with a side menu
@@ -1487,6 +1544,10 @@ async function pageSettings(section) {
     <div class="panel" id="sec-dups"><h3>כפילויות אפשריות</h3>
       <p class="muted" style="margin-top:0">כאן מופיעים סרטים וסדרות שנראים אותו דבר עם מילה נוספת בשם, והאתר לא איחד אותם לבד כי לא היה בטוח. לכל זוג: <b>אחד</b> מאחד רק אותם, <b>מחק בכל האתר</b> מוחק את המילה המיותרת מכל השמות, <b>לא אותו דבר</b> מסתיר את ההצעה.</p>
       <div id="dups"><div class="spinner"></div></div>
+    </div>
+    <div class="panel" id="sec-hidden"><h3>מוסתרים</h3>
+      <p class="muted" style="margin-top:0">סדרות וסרטים שהסתרת (בדף שלהם ← ⋯ ← הסתר). הם לא מופיעים בשום מקום באתר עד שתחזיר אותם.</p>
+      <div id="hidden-list"><div class="spinner"></div></div>
     </div>
     <div class="panel" id="sec-clean"><h3>ניקוי שמות</h3>
       <p class="muted" style="margin-top:0">האתר מזהה לבד חתימות של קבוצות (כמו "קינג סרט") ומוחק אותן משמות הסרטים, כדי שכל סרט יופיע פעם אחת. אם נשארה חתימה, כתוב אותה כאן, <b>שורה לכל ביטוי</b>, והיא תימחק מכל השמות.</p>
@@ -1614,6 +1675,26 @@ async function pageSettings(section) {
     });
   });
   if (!sec || sec[0] === 'sec-dups' || matchMedia('(min-width: 1000px)').matches) drawDups();
+
+  // --- hidden titles
+  const drawHidden = async () => {
+    const box = $('#hidden-list');
+    if (!box) return;
+    let list;
+    try { list = (await api('/api/hidden')).titles; } catch (e) { box.innerHTML = errorBox(e); return; }
+    box.innerHTML = list.length ? list.map((x) => `<div class="hid-row" data-id="${x.id}">
+        <a href="#/title/${x.id}"><b>${esc(x.name)}</b> <span class="muted">${x.kind === 'series' ? 'סדרה' : 'סרט'}${x.year ? ' · ' + x.year : ''}</span></a>
+        <button class="btn small">👁 החזר</button></div>`).join('')
+      : '<div class="note">אין כרגע סדרות או סרטים מוסתרים.</div>';
+    box.querySelectorAll('.hid-row button').forEach((b) => b.onclick = () => run(async () => {
+      const row = b.closest('.hid-row');
+      await api(`/api/titles/${row.dataset.id}`, {method: 'PATCH', body: {hidden_title: false}});
+      row.remove();
+      libraryCache = null;
+      if (!box.querySelector('.hid-row')) drawHidden();
+    }));
+  };
+  if (!sec || sec[0] === 'sec-hidden' || matchMedia('(min-width: 1000px)').matches) drawHidden();
 
   $('#save-phrases').onclick = () => run(async () => {
     await api('/api/settings', {method: 'POST', body: {strip_phrases: $('#strip-phrases').value}});
