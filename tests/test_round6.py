@@ -241,3 +241,13 @@ def test_existing_series_with_number_moves_to_its_season(client):
     regroup_all(db, True)
     m = db.q1("SELECT m.season, t.name FROM media m JOIN titles t ON t.id = m.title_id WHERE m.msg_id = 77")
     assert (m["name"], m["season"]) == ("הישרדות", 8)
+
+
+def test_search_finds_videos_filed_under_another_name(client):
+    login(client)
+    db = client.app.state.db
+    tid = db.get_or_create_title("series", "סדרות ישראליות", "סדרותישראליות", None)  # e.g. filed under the group's name
+    db.add_media(chat_id=-100, msg_id=5, title_id=tid, season=8, episode=3, file_name="", caption="עונה 8 פרק 3 #הישרדות",
+                 size=1, mime="video/mp4", duration=1500, width=1, height=1, added_at=1000)
+    r = client.get("/api/library?kind=series&files=1&q=הישרדות").json()
+    assert r["total"] == 0 and [t["name"] for t in r["by_file"]] == ["סדרות ישראליות"]

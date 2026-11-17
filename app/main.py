@@ -351,6 +351,13 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
             page.append(t)
         out = {"titles": page, "total": len(items), "counts": counts, "offset": offset, "season": want_season}
+        if q and offset == 0 and len(raw_q) >= 2 and qp.get("files") == "1":
+            # also: videos whose TELEGRAM text has these words but that sit under another name on the site
+            shown = {t["id"] for t in items}
+            by_id = {t["id"]: t for t in db.library_titles()}
+            extra = [by_id[i] for i in db.titles_by_caption(raw_q) if i in by_id and i not in shown
+                     and (kind not in ("series", "movie") or by_id[i]["kind"] == kind)]
+            out["by_file"] = [card(t) for t in extra[:30]]
         if offset == 0 and not q and not qp.get("nocont"):
             out["continue"] = [
                 {

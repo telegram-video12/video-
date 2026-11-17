@@ -596,6 +596,14 @@ class Database:
             self.conn.executemany("UPDATE progress SET history_hidden = 1 WHERE media_id = ?", [(i,) for i in media_ids])
             self.conn.commit()
 
+    def titles_by_caption(self, text: str, limit: int = 30) -> list[int]:
+        """Where did videos whose Telegram text/file name contains this go? (they may sit under another name)"""
+        like = f"%{text}%"
+        rows = self.q("""SELECT title_id, COUNT(*) AS n FROM media
+                         WHERE hidden = 0 AND (caption LIKE ? OR file_name LIKE ?)
+                         GROUP BY title_id ORDER BY n DESC LIMIT ?""", (like, like, limit))
+        return [r["title_id"] for r in rows]
+
     def most_watched(self, limit: int = 10) -> list[int]:
         """Titles you spent the most time watching (the place reached in each video counts)."""
         rows = self.q(f"""SELECT m.title_id, SUM(p.position) AS s FROM progress p JOIN media m ON m.id = p.media_id

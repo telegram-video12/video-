@@ -604,8 +604,8 @@ async function pageSearch(st) {
     let s, m;
     try {
       [s, m] = await Promise.all([
-        api(`/api/library?kind=series&sort=year&limit=30&nocont=1&q=${encodeURIComponent(q)}`),
-        api(`/api/library?kind=movie&sort=year&limit=60&q=${encodeURIComponent(q)}`),
+        api(`/api/library?kind=series&sort=year&limit=30&nocont=1&files=1&q=${encodeURIComponent(q)}`),
+        api(`/api/library?kind=movie&sort=year&limit=60&files=1&q=${encodeURIComponent(q)}`),
       ]);
     } catch (e) {
       if (my !== token) return;
@@ -614,6 +614,11 @@ async function pageSearch(st) {
       return;
     }
     if (my !== token) return;
+    const byFile = [...(s.by_file || []), ...(m.by_file || [])];
+    const fileSection = byFile.length ? rowSection('📂 נמצא בקבצים בטלגרם, תחת שם אחר באתר', '',
+      `<p class="muted" style="margin:-4px 0 10px;font-size:13px">בכיתוב של הסרטונים בטלגרם מופיע "${esc(q)}", אבל באתר הם נמצאים תחת השמות האלה. אפשר לתקן שם בדף שלהם ← ⋯ ← עריכה, או לאחד.</p>
+       <div class="pgrid">${byFile.map(posterCard).join('')}</div>`) : '';
+    if (!s.total && !m.total && byFile.length) { out.innerHTML = fileSection; return; }
     if (!s.total && !m.total) {
       out.innerHTML = `<div class="empty"><h2>לא נמצא "${esc(q)}" בספרייה</h2><p>אולי הקבוצה שלו לא מסומנת ב<a class="link" href="#/more">הגדרות</a>.</p></div>`;
       return;
@@ -624,7 +629,8 @@ async function pageSearch(st) {
     } else delete out.dataset.season;
     out.innerHTML =
       (s.total ? rowSection(`סדרות (${n(s.total)})`, '', `<div class="pgrid">${s.titles.map(posterCard).join('')}</div>`) : '') +
-      (m.total ? rowSection(`סרטים (${n(m.total)})`, '', `<div class="pgrid">${m.titles.map(posterCard).join('')}</div>`) : '');
+      (m.total ? rowSection(`סרטים (${n(m.total)})`, '', `<div class="pgrid">${m.titles.map(posterCard).join('')}</div>`) : '') +
+      fileSection;
   };
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 300); });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { input.blur(); if (input.value.trim().length >= 2) remember(input.value.trim()); } });
