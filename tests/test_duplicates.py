@@ -100,10 +100,10 @@ def test_name_inside_a_longer_name_joins_same_movie(client):
     merge_similar_movies(db)
     db._titles_cache = None
     names = sorted(t["name"] for t in client.get("/api/library?limit=50").json()["titles"])
-    assert names == ["אבא גנוב", "אבא גנוב 2", "חן סרטים אבא גנוב 2 ישראלי"]
+    assert names == ["אבא גנוב", "אבא גנוב 2", "אבא גנוב 2 ישראלי"]  # "חן סרטים" is an uploader signature
     sugg = possible_duplicates(db)
     assert [(p["a"]["name"], p["b"]["name"], p["extras"]) for p in sugg] == \
-        [("אבא גנוב 2", "חן סרטים אבא גנוב 2 ישראלי", ["חן סרטים", "ישראלי"])]
+        [("אבא גנוב 2", "אבא גנוב 2 ישראלי", ["ישראלי"])]
 
 
 def test_scan_report_says_why_nothing_was_added(client):
@@ -128,3 +128,30 @@ def test_scan_asked_while_busy_runs_again_after(client):
     client.post("/api/chats", json={"chats": [{"id": -100, "title": "קבוצת סדרות", "enabled": True}]})
     sc.status["running"] = False
     asyncio.run(go())
+
+
+def test_hebrew_name_prefers_the_israeli_show(monkeypatch):
+    t = TMDB("k")
+
+    async def fake_get(client, path, **params):
+        if path.startswith("/search/tv"):
+            return {"results": [{"id": 14658, "name": "הישרדות", "original_name": "Survivor", "original_language": "en"},
+                                {"id": 42, "name": "הישרדות", "original_name": "הישרדות", "original_language": "he"}]}
+        return {"id": int(path.split("/")[-1]), "name": "הישרדות", "genres": []}
+
+    t._get = fake_get
+    meta = asyncio.run(t.lookup("series", "הישרדות"))
+    assert meta["tmdb_id"] == 42
+
+
+def test_recheck_series_tied_to_a_foreign_show(client):
+    from app.library import recheck_foreign_matches
+    login(client)
+    db = client.app.state.db
+    a = db.get_or_create_title("series", "הישרדות", "הישרדות", None)
+    db.update_title(a, tmdb_id=14658, tmdb_checked=1, tmdb_details=1, original_name="Survivor")
+    b = db.get_or_create_title("series", "פאודה", "פאודה", None)
+    db.update_title(b, tmdb_id=1, tmdb_checked=1, tmdb_details=1, original_name="פאודה")
+    recheck_foreign_matches(db)
+    assert db.get_title(a)["tmdb_id"] is None and db.get_title(a)["tmdb_checked"] == 0
+    assert db.get_title(b)["tmdb_id"] == 1  # an Israeli match stays

@@ -288,6 +288,23 @@ def _possible_duplicates(db: Database) -> list[dict]:
     return out
 
 
+def recheck_foreign_matches(db: Database) -> None:
+    """Once: series with a Hebrew name that TMDB tied to a foreign show (its original name has no Hebrew) are
+    looked up again, now that Israeli shows with the same name come first. Your own names/choices are kept."""
+    if db.get_pref("tmdb_he_recheck") == "1":
+        return
+    rows = db.q("""SELECT id, name, original_name FROM titles WHERE kind = 'series' AND tmdb_id IS NOT NULL
+                   AND name_manual = 0 AND original_name IS NOT NULL""")
+    heb = lambda s: any("\u0590" <= ch <= "\u05ff" for ch in s or "")  # noqa: E731
+    ids = [r["id"] for r in rows if heb(r["name"]) and not heb(r["original_name"])]
+    with db._lock:
+        db.conn.executemany("UPDATE titles SET tmdb_id = NULL, tmdb_checked = 0, tmdb_details = 0 WHERE id = ?",
+                            [(i,) for i in ids])
+        db.conn.commit()
+    db.set_pref("tmdb_he_recheck", "1")
+    log.info("%d series with a Hebrew name will be matched on TMDB again", len(ids))
+
+
 def refresh_series_years(db: Database) -> None:
     """Once: series already matched on TMDB fetch their details again to learn their latest season's year."""
     if db.get_pref("series_last_year") == "1":

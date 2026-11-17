@@ -1014,9 +1014,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         try:
             await asyncio.to_thread(migrate_norms, db)
             await asyncio.to_thread(repair, db)
-            from .library import merge_similar_movies, refresh_series_years, retry_unmatched
+            from .library import merge_similar_movies, recheck_foreign_matches, refresh_series_years, retry_unmatched
 
             retry_unmatched(db)
+            recheck_foreign_matches(db)
             refresh_series_years(db)
             if db.get_pref("thumbs_retry") != "1":  # pictures wrongly marked "none" during connection problems
                 for f in (settings.data_dir / "thumbs").glob("*.none"):

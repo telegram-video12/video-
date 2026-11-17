@@ -38,7 +38,7 @@ JUNK_RE = re.compile(
     r"hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|avc|aac\d?(?:\.\d)?|ac3|dd5\.1|ddp?5\.1|10bit|"
     r"proper|repack|extended|unrated|remastered|multi|dual|subs?|hebsub|heb|eng|nf|amzn|dsnp|hmax|atvp|"
     r"מתורגם|תרגום|כתוביות|מדובב|באיכות|גבוהה|hd|sd|fhd|mkv|mp4|avi|"
-    r"2160|1080|720|480|br|bd|dvd|dvdscr|vod|hdrip|hdcam|camrip|hdtc|1080i)\b",
+    r"2160|1080|720|480|br|bd|dvd|dvdscr|vod|hdrip|hdcam|camrip|hdtc|1080i|\d{3,4}[pi])\b",
     re.I,
 )
 
@@ -87,6 +87,8 @@ def clean_name(text: str) -> str:
     text = re.sub(r"[^\w\s'׳\"&!?:-]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = text.strip(" -:|,–—")
+    # uploader signatures at the start: "נתי מדיה X", "זירה מדיה X", "דב סרטים - X"
+    text = re.sub(r"^[^\s\d]+\s+(?:מדיה|סרטים)\s*[-–:|]?\s+(?=\S)", "", text)
     # "הסרט: X" / "סדרה - X" -> "X"
     text = re.sub(r"^(?:הסרט|סרט|הסדרה|סדרה|movie|film)\s*[:\-–]?\s+(?=\S)", "", text, flags=re.I)
     words = text.split()

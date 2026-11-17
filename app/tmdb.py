@@ -154,6 +154,16 @@ class TMDB:
                     res = await self._search_smart(client, media_type, name, duration)
                 if not res:
                     return None
+                # A Hebrew name: when TMDB also has an ISRAELI show/movie with exactly this name, take it before a
+                # foreign one that only has this Hebrew translation ("הישרדות" = the Israeli show, not Survivor US).
+                from .parser import normalize
+                if any("\u0590" <= ch <= "\u05ff" for ch in name):
+                    want = normalize(name)
+                    local = [r for r in res[:10] if r.get("original_language") == "he"
+                             and want in {normalize(r.get("name") or r.get("title") or ""),
+                                          normalize(r.get("original_name") or r.get("original_title") or "")}]
+                    if local:
+                        res = local + [r for r in res if r not in local]
                 item = res[0]
                 # one details call gives genres, rating, length and cast (credits) in Hebrew
                 det = await self._get(client, f"/{media_type}/{item['id']}", language="he-IL",
