@@ -152,6 +152,7 @@ def test_recheck_series_tied_to_a_foreign_show(client):
     db.update_title(a, tmdb_id=14658, tmdb_checked=1, tmdb_details=1, original_name="Survivor")
     b = db.get_or_create_title("series", "פאודה", "פאודה", None)
     db.update_title(b, tmdb_id=1, tmdb_checked=1, tmdb_details=1, original_name="פאודה")
+    db.set_pref("tmdb_he_recheck", "")  # it already ran once when the site started (empty library then)
     recheck_foreign_matches(db)
     assert db.get_title(a)["tmdb_id"] is None and db.get_title(a)["tmdb_checked"] == 0
     assert db.get_title(b)["tmdb_id"] == 1  # an Israeli match stays
