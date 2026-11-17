@@ -222,7 +222,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         return page("index.html")
 
     async def manifest(request: Request):
-        return FileResponse(STATIC / "manifest.json", media_type="application/manifest+json")
+        # never cached: the phone checks it to update the app's name and icon on the home screen
+        return FileResponse(STATIC / "manifest.json", media_type="application/manifest+json",
+                            headers={"Cache-Control": "no-cache"})
 
     # --------------------------------------------------------------- library
     def thumb_url(media_id: int | None) -> str | None:
