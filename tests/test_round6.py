@@ -212,3 +212,32 @@ def test_my_top_10(client):
         client.post(f"/api/progress/{t['first_media_id']}", json={"position": 100 * (i + 1), "duration": 1500})
     top = client.get("/api/home").json()["top"]
     assert [t["id"] for t in top] == [lib[2]["id"], lib[1]["id"], lib[0]["id"]]  # the most watched first
+
+
+def test_search_with_season_and_season_number_after_name(client):
+    import asyncio
+    login(client)
+    tg = client.app.state.tg
+    from test_api import vm
+    tg.messages = [(1, vm(1, "הישרדות עונה 7 פרק 1")), (2, vm(2, "הישרדות 8 פרק 3")), (3, vm(3, "פשע 2 (2010)", duration=6000))]
+    scan(client)
+    lib = client.get("/api/library?kind=series").json()["titles"]
+    assert [t["name"] for t in lib] == ["הישרדות"]  # "הישרדות 8" is season 8 of the same series
+    seasons = sorted({m["season"] for m in client.get(f"/api/titles/{lib[0]['id']}").json()["media"]})
+    assert seasons == [7, 8]
+    r = client.get("/api/library?q=הישרדות עונה 8").json()
+    assert [t["name"] for t in r["titles"]] == ["הישרדות"] and r["season"] == 8
+    assert client.get("/api/library?q=פשע 2").json()["season"] is None  # "ע 2" inside a word is not a season
+
+
+def test_existing_series_with_number_moves_to_its_season(client):
+    from app.library import regroup_all
+    login(client)
+    client.post("/api/chats", json={"chats": [{"id": -100, "title": "קבוצת סדרות", "enabled": True}]})
+    db = client.app.state.db
+    old = db.get_or_create_title("series", "הישרדות 8", "הישרדות8", None)  # how the old version filed it
+    db.add_media(chat_id=-100, msg_id=77, title_id=old, season=1, episode=3, file_name="", caption="הישרדות 8 פרק 3",
+                 size=1, mime="video/mp4", duration=1500, width=1, height=1, added_at=1000, auto_norm="הישרדות8")
+    regroup_all(db, True)
+    m = db.q1("SELECT m.season, t.name FROM media m JOIN titles t ON t.id = m.title_id WHERE m.msg_id = 77")
+    assert (m["name"], m["season"]) == ("הישרדות", 8)

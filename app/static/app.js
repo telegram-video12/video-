@@ -619,13 +619,22 @@ async function pageSearch(st) {
       return;
     }
     if (q.length >= 2) saveTimer = setTimeout(() => remember(q), 1500);
+    if (s.season) {  // "הישרדות עונה 8": open the series right at that season
+      out.dataset.season = s.season;
+    } else delete out.dataset.season;
     out.innerHTML =
       (s.total ? rowSection(`סדרות (${n(s.total)})`, '', `<div class="pgrid">${s.titles.map(posterCard).join('')}</div>`) : '') +
       (m.total ? rowSection(`סרטים (${n(m.total)})`, '', `<div class="pgrid">${m.titles.map(posterCard).join('')}</div>`) : '');
   };
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 300); });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { input.blur(); if (input.value.trim().length >= 2) remember(input.value.trim()); } });
-  out.addEventListener('click', (e) => { if (e.target.closest('.poster-card') && input.value.trim().length >= 2) remember(input.value.trim()); });
+  out.addEventListener('click', (e) => {
+    const card = e.target.closest('.poster-card');
+    if (!card) return;
+    if (input.value.trim().length >= 2) remember(input.value.trim());
+    const id = (card.getAttribute('href') || '').split('/').pop();
+    if (out.dataset.season && id) sessionStorage.setItem(`season:${id}`, out.dataset.season);
+  });
   run();
   if (!st.q) setTimeout(() => input.focus(), 50);
   cleanup = () => { clearTimeout(timer); clearTimeout(saveTimer); };

@@ -195,6 +195,10 @@ def _parse_one(text: str) -> ParsedInfo | None:
         if ym:
             year = int(ym.group(1))
             name = clean_name(re.sub(rf"\b{year}\b", " ", name))
+        if season is None:  # "הישרדות 8 פרק 3": a small number right after the name is the season
+            sm = re.fullmatch(r"(.*\S)\s+(\d{1,2})", name)
+            if sm and 1 <= int(sm.group(2)) <= 40 and re.search(r"[^\d\s]", sm.group(1)):
+                name, season = sm.group(1).strip(" -:|,–—"), int(sm.group(2))
         return ParsedInfo(name=name, kind="series", season=season or 1, episode=episode, year=year,
                           season_explicit=season is not None)
 

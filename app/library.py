@@ -105,21 +105,24 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: 
         info = parse_media(r["caption"], r["file_name"], fallback, new)
         norm = normalize(info.name) or info.name
         if info.kind != r["kind"] or norm != r["norm_name"]:
-            moves.append((r["id"], r["title_id"], info.kind, norm, info.name, info.year))
+            # a season found in the name ("הישרדות 8 פרק 3") moves along with it
+            season = info.season if info.kind == "series" and info.season_explicit else None
+            moves.append((r["id"], r["title_id"], info.kind, norm, info.name, info.year, season))
     if not moves:
         return 0
     # 2. apply them in one transaction
     cache: dict[tuple[str, str], int] = {}
     with db._lock:
         conn = db.conn
-        for media_id, _current, kind, norm, name, year in moves:
+        for media_id, _current, kind, norm, name, year, season in moves:
             key = (kind, norm, year)
             if key not in cache:
                 tid = db.find_title(conn, kind, norm, year)
                 cache[key] = tid or conn.execute(
                     "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (kind, name, db.free_key(conn, kind, norm, year), normalize(name), year, time.time())).lastrowid
-            conn.execute("UPDATE media SET title_id = ?, auto_norm = ? WHERE id = ?", (cache[key], norm, media_id))
+            conn.execute("UPDATE media SET title_id = ?, auto_norm = ?, season = COALESCE(?, season) WHERE id = ?",
+                         (cache[key], norm, season, media_id))
         conn.execute("DELETE FROM titles WHERE id NOT IN (SELECT DISTINCT title_id FROM media)")
         conn.commit()
         db.version += 1

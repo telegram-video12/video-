@@ -292,7 +292,15 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         """Paged library: ?kind=all|series|movie&q=search&offset=0&limit=60"""
         qp = request.query_params
         kind = qp.get("kind", "all")
-        q = normalize(qp.get("q", "").strip())
+        raw_q = qp.get("q", "").strip()
+        # "הישרדות עונה 8" / "הבורר ע2 פ5" / "Friends S05E03": search the name, remember the season
+        want_season = None
+        sm = re.search(r"(?<![א-ת])(?:עונה|ע['׳]?|season\s*|\bs)\s*(\d{1,2})", raw_q, re.I)
+        if sm:
+            want_season = int(sm.group(1))
+            raw_q = (raw_q[:sm.start()] + " " + raw_q[sm.end():])
+        raw_q = re.sub(r"(?<![א-ת])(?:פרק|פ['׳]?|episode\s*|\be)\s*\d{1,4}\b", " ", raw_q, flags=re.I).strip()
+        q = normalize(raw_q)
         offset = max(0, int(qp.get("offset", 0) or 0))
         limit = min(200, max(1, int(qp.get("limit", 60) or 60)))
         items = db.library_titles()
@@ -342,7 +350,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             t = {k: v for k, v in t.items() if not k.startswith("_")}
             t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
             page.append(t)
-        out = {"titles": page, "total": len(items), "counts": counts, "offset": offset}
+        out = {"titles": page, "total": len(items), "counts": counts, "offset": offset, "season": want_season}
         if offset == 0 and not q and not qp.get("nocont"):
             out["continue"] = [
                 {
