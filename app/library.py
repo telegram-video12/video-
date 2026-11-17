@@ -237,6 +237,46 @@ def _same_length(a: dict, b: dict, ratio: float = 0.03, floor: float = 90) -> bo
     return bool(da and db_ and abs(da - db_) <= max(ratio * max(da, db_), floor))
 
 
+def split_mixed_titles(db: Database) -> int:
+    """A title holding both Israeli and foreign videos of the same name (Israeli and American "הישרדות"):
+    the videos of the other origin move to their own title. Uses each group's setting and hints in the text."""
+    rows = db.q("""SELECT m.id, m.title_id, m.caption, m.file_name, c.origin AS chat_origin
+                   FROM media m LEFT JOIN chats c ON c.id = m.chat_id WHERE m.manual = 0""")
+    by_title: dict[int, dict[str, list[int]]] = {}
+    for r in rows:
+        o = media_origin(r["caption"], r["file_name"], {"origin": r["chat_origin"]})
+        if o:
+            by_title.setdefault(r["title_id"], {}).setdefault(o, []).append(r["id"])
+    moved = 0
+    for title_id, groups in by_title.items():
+        if len(groups) < 2:
+            continue
+        t = db.get_title(title_id)
+        if not t:
+            continue
+        keep = t.get("origin")
+        if keep not in groups:  # which show the title is: TMDB's original name in Hebrew = Israeli, else the larger group
+            keep = "il" if (t.get("original_name") and any("\u0590" <= ch <= "\u05ff" for ch in t["original_name"])) \
+                else max(groups, key=lambda k: len(groups[k]))
+        other = "intl" if keep == "il" else "il"
+        base = (t["norm_name"] or "").split("@")[0]
+        with db._lock:
+            conn = db.conn
+            conn.execute("UPDATE titles SET origin = ? WHERE id = ?", (keep, title_id))
+            key = f"{base}@{other}"
+            row = conn.execute("SELECT id FROM titles WHERE kind = ? AND norm_name = ?", (t["kind"], key)).fetchone()
+            new_id = row[0] if row else conn.execute(
+                "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at, origin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (t["kind"], t["name"], key, t.get("name_key") or base, None, time.time(), other)).lastrowid
+            conn.executemany("UPDATE media SET title_id = ? WHERE id = ?", [(new_id, i) for i in groups[other]])
+            conn.commit()
+            db.version += 1
+        moved += len(groups[other])
+        log.info("%s: %d videos of the %s show moved to their own title", t["name"], len(groups[other]),
+                 "Israeli" if other == "il" else "foreign")
+    return moved
+
+
 def merge_similar_movies(db: Database) -> int:
     """Join uploads of the same movie that carry extra words in the name (all uploads stay inside as
     versions). 1) one extra word at the start or end; 2) the name of a movie already in the library inside
@@ -348,6 +388,7 @@ def regroup_all(db: Database, force: bool = False, only: set | None = None) -> i
     corpus = _corpus(db)
     moved = sum(regroup_chat(db, c["id"], corpus, force) for c in db.chats() if only is None or c["id"] in only)
     moved += db.merge_by_name()
+    moved += split_mixed_titles(db)
     moved += merge_similar_movies(db)
     db.x("UPDATE media SET auto_norm = (SELECT norm_name FROM titles t WHERE t.id = media.title_id) "
          "WHERE auto_norm IS NULL AND manual = 0")

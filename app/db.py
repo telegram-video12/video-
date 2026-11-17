@@ -331,8 +331,49 @@ class Database:
             from .parser import normalize
 
             fields["name_key"] = normalize(fields["name"] or "")
+        if "tmdb_id" in fields:  # linked to another show: its episode names no longer apply
+            cur = self.q1("SELECT tmdb_id FROM titles WHERE id = ?", (title_id,))
+            if cur and cur["tmdb_id"] != fields["tmdb_id"]:
+                self.clear_episode_info(title_id)
         sets = ", ".join(f"{k} = ?" for k in fields)
         self.x(f"UPDATE titles SET {sets} WHERE id = ?", (*fields.values(), title_id), soft=soft)
+
+    def clear_episode_info(self, title_id: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM episode_info WHERE title_id = ?", (title_id,))
+            self.conn.execute("DELETE FROM episode_seasons WHERE title_id = ?", (title_id,))
+            self.conn.commit()
+
+    def title_channels(self, title_id: int) -> list[dict]:
+        """The groups this title's videos came from, with how many each."""
+        return self.q("""SELECT m.chat_id, COALESCE(c.title, CAST(m.chat_id AS TEXT)) AS title, c.origin, COUNT(*) AS n
+                         FROM media m LEFT JOIN chats c ON c.id = m.chat_id
+                         WHERE m.title_id = ? GROUP BY m.chat_id ORDER BY n DESC""", (title_id,))
+
+    def split_by_channel(self, title_id: int, chat_id: int) -> int:
+        """Move one group's videos of this title into a separate title of the same name (a different show that
+        shares the name, e.g. the American "הישרדות" next to the Israeli one). Returns the new title's id."""
+        t = self.get_title(title_id)
+        chat = self.get_chat(chat_id) or {}
+        origin = chat.get("origin")
+        base = (t["norm_name"] or "").split("@")[0]
+        with self._lock:
+            conn = self.conn
+            key = f"{base}@{origin}" if origin and origin != t.get("origin") else f"{base}@ch{abs(chat_id)}"
+            row = conn.execute("SELECT id FROM titles WHERE kind = ? AND norm_name = ?", (t["kind"], key)).fetchone()
+            if row:
+                new_id = row[0]
+            else:
+                new_id = conn.execute(
+                    "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at, origin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (t["kind"], t["name"], key, t.get("name_key") or base, None, time.time(), origin)).lastrowid
+            # manual = 1: your split is never undone by the automatic re-filing
+            conn.execute("UPDATE media SET title_id = ?, manual = 1 WHERE title_id = ? AND chat_id = ?",
+                         (new_id, title_id, chat_id))
+            conn.execute("DELETE FROM titles WHERE id NOT IN (SELECT DISTINCT title_id FROM media)")
+            conn.commit()
+            self.version += 1
+        return new_id
 
     def merge_titles(self, source_id: int, target_id: int, soft: bool = False) -> None:
         """soft: a background merge (TMDB) - the library list refreshes within 20s instead of at once,

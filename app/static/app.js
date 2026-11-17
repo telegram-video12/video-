@@ -292,6 +292,15 @@ function skeletonGrid() {
   return `<div class="pgrid">${Array.from({length: 9}, () => '<div class="poster-card"><div class="poster sk"></div></div>').join('')}</div>`;
 }
 
+function notice(text, ms = 4000) {  // a short message at the bottom, without a button
+  document.querySelector('.undo-toast')?.remove();
+  const el = document.createElement('div');
+  el.className = 'undo-toast';
+  el.innerHTML = `<span>${esc(text)}</span>`;
+  setTimeout(() => el.remove(), ms);
+  document.body.appendChild(el);
+}
+
 function undoToast(text, onUndo, ms = 5000) {
   document.querySelector('.undo-toast')?.remove();
   const el = document.createElement('div');
@@ -932,9 +941,29 @@ async function pageTitle(id) {
   $app.querySelector('#title-menu').onclick = async () => {
     const opts = [['edit', editMode ? '✓ סיום עריכה' : '✏️ עריכת פרטים ופרקים'],
                   ['all', '✓ סמן הכל כנצפה'], ['reset', '↺ אפס התקדמות']];
+    opts.push(['split', '✂️ פצל לפי ערוץ (תוכן שונה עם אותו שם)']);
     opts.push(['hide', data.hidden_title ? '👁 החזר לספרייה' : `🙈 הסתר את ה${isSeries ? 'סדרה' : 'סרט'} מהספרייה`]);
     if (data.ep_names) opts.push(['names', data.ep_names_off ? '🏷 הצג שמות ותקצירי פרקים מ-TMDB' : '🏷 הסתר שמות פרקים מ-TMDB (אם הם לא מתאימים)']);
     const v = await bottomSheet(t.name, opts, '');
+    if (v === 'split') {
+      let chans;
+      try { chans = (await api(`/api/titles/${t.id}/channels`)).channels; } catch (e) { alert(e.message); return; }
+      if (chans.length < 2) { alert('כל הפרקים כאן הגיעו מערוץ אחד, אין מה לפצל.'); return; }
+      const flag = (o) => (o === 'il' ? ' 🇮🇱' : o === 'intl' ? ' 🌍' : '');
+      const pick = await bottomSheet('איזה ערוץ להעביר לסדרה נפרדת?',
+        chans.map((c) => [String(c.chat_id), `${c.title}${flag(c.origin)} · ${count(c.n, 'קובץ אחד', 'קבצים')}`]), '');
+      if (!pick) return;
+      const ch = chans.find((c) => String(c.chat_id) === pick);
+      if (!confirm(`להעביר את ${count(ch.n, 'הקובץ', 'הקבצים')} מ"${ch.title}" ל"${t.name}" נפרדת?\nכך תוכן שונה עם אותו שם (למשל הישרדות הישראלית והאמריקאית) לא יתערבב.`)) return;
+      try {
+        const r = await api(`/api/titles/${t.id}/split`, {method: 'POST', body: {chat_id: +pick}});
+        libraryCache = null;
+        notice(`✓ הפרקים מ"${ch.title}" הועברו לכרטיס נפרד של "${t.name}"`);
+        reload();
+        void r;
+      } catch (e) { alert(e.message); }
+      return;
+    }
     if (v === 'hide') {
       const hide = !data.hidden_title;
       try { await api(`/api/titles/${t.id}`, {method: 'PATCH', body: {hidden_title: hide}}); } catch (e) { alert(e.message); return; }

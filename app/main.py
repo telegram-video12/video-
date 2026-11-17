@@ -635,6 +635,21 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             raise ApiError(503, "אין חיבור לאתר TMDB כרגע. בדוק את האינטרנט ונסה שוב.") from e
         return ok(db.get_title(title_id))
 
+    async def title_channels(request: Request):
+        return ok({"channels": db.title_channels(request.path_params["id"])})
+
+    async def split_title(request: Request):
+        """Your choice: this group's videos of the title are a different show - give them their own title."""
+        title_id = request.path_params["id"]
+        chat_id = int((await body(request)).get("chat_id") or 0)
+        chans = db.title_channels(title_id)
+        if len(chans) < 2 or chat_id not in {c["chat_id"] for c in chans}:
+            raise ApiError(400, "אין מה לפצל")
+        new_id = db.split_by_channel(title_id, chat_id)
+        if scanner.tmdb:  # the new one finds its own poster
+            asyncio.ensure_future(scanner.tmdb.enrich_title(db, db.get_title(new_id)))
+        return ok({"title_id": new_id})
+
     async def merge_title(request: Request):
         title_id = request.path_params["id"]
         target = int((await body(request)).get("into") or 0)
@@ -1028,6 +1043,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                     f.unlink(missing_ok=True)
                 db.set_pref("thumbs_retry", "1")
             await asyncio.to_thread(merge_similar_movies, db)
+            from .library import split_mixed_titles
+
+            await asyncio.to_thread(split_mixed_titles, db)
         except Exception as e:  # noqa: BLE001 - never take the site down for this; show it in Settings
             log.exception("library upkeep failed")
             scanner.status["error"] = f"סידור הספרייה נכשל: {type(e).__name__}: {e}"
@@ -1116,6 +1134,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/watched-many", watched_many, methods=["POST"]),
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),
         R("/api/titles/{id:int}/merge", merge_title, methods=["POST"]),
+        R("/api/titles/{id:int}/channels", title_channels), R("/api/titles/{id:int}/split", split_title, methods=["POST"]),
         R("/api/media/{id:int}", media_detail), R("/api/media/{id:int}", edit_media, methods=["PATCH"]),
         R("/api/progress/{id:int}", save_progress, methods=["POST"]),
         R("/api/watched/{id:int}", set_watched, methods=["POST"]),

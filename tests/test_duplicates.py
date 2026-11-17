@@ -197,3 +197,37 @@ def test_foreign_origin_puts_israeli_results_last():
     t._get = fake_get
     assert asyncio.run(t.lookup("series", "הישרדות", origin="intl"))["tmdb_id"] == 14658
     assert asyncio.run(t.lookup("series", "הישרדות", origin="il"))["tmdb_id"] == 42
+
+
+def test_mixed_israeli_and_foreign_title_is_split(client):
+    from app.library import split_mixed_titles
+    login(client)
+    db = client.app.state.db
+    tid = db.get_or_create_title("series", "הישרדות", "הישרדות", None)
+    db.update_title(tid, tmdb_id=32958, original_name="הישרדות")
+    for i, cap in enumerate(["הישרדות עונה 8 פרק 1 שודר ב: רשת 13", "הישרדות עונה 8 פרק 2 מתורגם",
+                             "הישרדות עונה 8 פרק 3 מתורגם", "הישרדות עונה 8 פרק 4"]):
+        db.add_media(chat_id=-100, msg_id=700 + i, title_id=tid, season=8, episode=i + 1, file_name="", caption=cap,
+                     size=1, mime="video/mp4", duration=1500, width=1, height=1, added_at=1000)
+    assert split_mixed_titles(db) == 2
+    names = {r["msg_id"]: r["title_id"] for r in db.q("SELECT msg_id, title_id FROM media")}
+    assert names[700] == names[703] == tid and names[701] == names[702] != tid  # translated ones apart
+    assert db.get_title(tid)["origin"] == "il" and split_mixed_titles(db) == 0  # once is enough
+
+
+def test_split_by_channel_and_names_cleared_on_new_tmdb(client):
+    login(client)
+    db = client.app.state.db
+    client.post("/api/chats", json={"chats": [{"id": -100, "title": "ישראלי", "enabled": True},
+                                              {"id": -200, "title": "מתורגם", "enabled": True}]})
+    tid = db.get_or_create_title("series", "הישרדות", "הישרדות", None)
+    for i, chat in enumerate([-100, -200, -200]):
+        db.add_media(chat_id=chat, msg_id=800 + i, title_id=tid, season=1, episode=i + 1, file_name="", caption="x",
+                     size=1, mime="video/mp4", duration=1500, width=1, height=1, added_at=1000)
+    chans = client.get(f"/api/titles/{tid}/channels").json()["channels"]
+    assert [(c["title"], c["n"]) for c in chans] == [("מתורגם", 2), ("ישראלי", 1)]
+    new = client.post(f"/api/titles/{tid}/split", json={"chat_id": -200}).json()["title_id"]
+    assert new != tid and len(client.get(f"/api/titles/{new}").json()["media"]) == 2
+    db.save_episode_info(tid, 1, [{"episode": 1, "name": "Old US name"}])
+    db.update_title(tid, tmdb_id=32958)
+    assert db.episode_info(tid) == {}
