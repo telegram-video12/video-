@@ -1441,14 +1441,32 @@ async function pageWatch(id) {
     if ((sleep() || {}).ep) { sleepNow(); return; }
     if (next) showNextOverlay();
   });
-  v.addEventListener('error', () => {
+  v.addEventListener('error', async () => {
+    if (v.src.includes('?t=')) return;  // the TV link: handled by the cast code
     const code = v.error && v.error.code;
-    const msg = code === 4
-      ? 'הדפדפן לא מצליח לנגן את הקובץ הזה (כנראה פורמט MKV/HEVC). נסה בכרום או אדג׳, או הורד את הקובץ ופתח ב-VLC.'
-      : 'שגיאה בטעינת הסרטון. בדוק שהשרת מחובר לטלגרם (בהגדרות).';
+    // first: is the video still on Telegram? if not, another upload of it may work (another group)
+    let check = null;
+    try { check = await api(`/api/media/${m.id}/check`); } catch (_) {}
+    if (check && !check.ok && check.alt_id) {
+      notice('הסרטון הזה לא זמין יותר בקבוצה שלו. עובר לגרסה מקבוצה אחרת…');
+      location.replace(`#/watch/${check.alt_id}`);
+      return;
+    }
+    let msg, dl = true;
+    if (check && !check.ok && check.reason === 'no_access') {
+      msg = 'הסרטון הזה כבר לא זמין: אין יותר גישה לקבוצה שלו בטלגרם (יצאת ממנה, נחסמת, או שהיא נמחקה), ואין לו גרסה מקבוצה אחרת.';
+      dl = false;
+    } else if (check && !check.ok && check.reason === 'deleted') {
+      msg = 'הסרטון הזה נמחק מהקבוצה בטלגרם, ואין לו גרסה מקבוצה אחרת.';
+      dl = false;
+    } else if (code === 4) {
+      msg = 'הדפדפן לא מצליח לנגן את הקובץ הזה (כנראה פורמט MKV/HEVC). נסה בכרום או אדג׳, או הורד את הקובץ ופתח ב-VLC.';
+    } else {
+      msg = 'שגיאה בטעינת הסרטון. בדוק שהשרת מחובר לטלגרם (בהגדרות).';
+    }
     const o = document.createElement('div');
     o.className = 'overlay';
-    o.innerHTML = `<div class="box"><p>${msg}</p><a class="btn" href="/api/stream/${m.id}" download="${esc(m.file_name || 'video')}">⬇ הורדה</a></div>`;
+    o.innerHTML = `<div class="box"><p>${msg}</p>${dl ? `<a class="btn" href="/api/stream/${m.id}" download="${esc(m.file_name || 'video')}">⬇ הורדה</a>` : `<a class="btn" href="#/title/${t.id}">לדף ה${isSeries ? 'סדרה' : 'סרט'}</a>`}</div>`;
     wrap.appendChild(o);
   });
 
@@ -1891,12 +1909,29 @@ async function pageSettings(section) {
       else if (!r.added && r.short === r.videos) hint = 'כל הסרטונים קצרים מ-3 דקות (טריילרים/קטעים), ולכן דולגו.';
       else if (!r.added) hint = 'כל הסרטונים כבר נמצאים בספרייה.';
       else if (r.short) hint = r.short === 1 ? 'סרטון אחד קצר מ-3 דקות דולג.' : `${n(r.short)} סרטונים קצרים מ-3 דקות דולגו.`;
+      if (r.no_access) {
+        return `<div class="scan-rep warn"><b>⚠️ ${esc(r.chat)}</b>: אין גישה לקבוצה (יצאת ממנה, נחסמת, או שהיא נמחקה).
+          ${r.library ? `${count(r.library, 'סרטון אחד ממנה לא יתנגן', `סרטונים ממנה לא יתנגנו`)}. סרט או פרק שיש לו גרסה מקבוצה אחרת ימשיך לעבוד.` : ''}
+          ${r.library && !r.handled ? `<div class="scan-acts"><button class="btn small" data-hidechat="${r.chat_id}">הסתר את הסרטונים שלה</button>
+          <button class="btn small ghost" data-keep>השאר</button></div>` : r.handled ? '<div class="muted">✓ הוסתר</div>' : ''}</div>`;
+      }
       return `<div class="scan-rep"><b>${esc(r.chat)}</b>: ${parts.join(' · ')}${hint ? `<div class="muted">${esc(hint)}</div>` : ''}</div>`;
     };
     el.innerHTML = s.running
       ? `⏳ סורק${s.chat ? ': ' + esc(s.chat) : '...'} · נוספו ${s.added}${s.queued ? '<div class="muted">הסריקה של הקבוצות שבחרת תתחיל מיד כשזה יסתיים.</div>' : ''}`
       : `סריקה אחרונה: ${when}${s.added ? ` · נוספו ${s.added}` : ''}${(s.report || []).map(why).join('')}${s.note ? `<div class="note" style="margin:8px 0 0">✓ ${esc(s.note)}</div>` : ''}${s.error ? `<div class="error-box" style="margin-top:8px">${esc(s.error)}</div>` : ''}`;
   };
+  $('#scan-status')?.addEventListener('click', (e) => {
+    const h = e.target.closest('[data-hidechat]');
+    if (h) {
+      if (!confirm('להסתיר את כל הסרטונים מהקבוצה הזו ולהפסיק לסרוק אותה? סרטים ופרקים שיש להם גרסה מקבוצה אחרת יישארו.')) return;
+      run(async () => {
+        await api(`/api/chats/${h.dataset.hidechat}/hide-media`, {method: 'POST'});
+        libraryCache = null;
+        h.closest('.scan-acts').outerHTML = '<div class="muted">✓ הוסתר</div>';
+      });
+    } else if (e.target.closest('[data-keep]')) e.target.closest('.scan-acts').remove();
+  });
   const startPoll = () => {
     clearInterval(poll);
     poll = setInterval(async () => {

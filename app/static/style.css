@@ -527,6 +527,8 @@ body.pl-fs { overflow: hidden; }
 
 .scan-rep { margin-top: 8px; font-size: 13px; line-height: 1.5; }
 .scan-rep .muted { font-size: 12.5px; }
+.scan-rep.warn { border: 1px solid rgba(239, 90, 76, .45); background: rgba(239, 90, 76, .08); border-radius: 10px; padding: 8px 10px; }
+.scan-acts { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .genre-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-bottom: 18px; }
 .genre-tile { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 14px 14px; border-radius: 12px;
   border: 1px solid var(--line); background: linear-gradient(135deg, var(--s2), var(--s1)); color: var(--text); font: inherit; cursor: pointer; text-align: right; }

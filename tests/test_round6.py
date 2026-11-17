@@ -251,3 +251,50 @@ def test_search_finds_videos_filed_under_another_name(client):
                  size=1, mime="video/mp4", duration=1500, width=1, height=1, added_at=1000)
     r = client.get("/api/library?kind=series&files=1&q=הישרדות").json()
     assert r["total"] == 0 and [t["name"] for t in r["by_file"]] == ["סדרות ישראליות"]
+
+
+class ChannelPrivateError(Exception):
+    """What Telegram says after you left / were banned from a group."""
+
+
+def test_group_without_access_and_switching_to_another_upload(client):
+    import asyncio
+    import dataclasses
+    login(client)
+    tg = client.app.state.tg
+    from test_api import vm
+    msgs = {-100: [(1, vm(1, "Inception (2010) 1080p", duration=6000))],
+            -200: [(1, dataclasses.replace(vm(1, "Inception (2010) 720p", duration=6000), chat_id=-200))]}
+
+    async def iter_messages(chat_id, min_id=0):
+        if chat_id == -100 and tg.gone:
+            raise ChannelPrivateError()
+        for mid, v in msgs[chat_id]:
+            if mid > min_id:
+                yield mid, v
+
+    async def get_message(chat_id, msg_id, fresh=False):
+        if chat_id == -100 and tg.gone:
+            raise ChannelPrivateError()
+        return object()
+
+    tg.gone = False
+    tg.iter_messages, tg.get_message = iter_messages, get_message
+    client.post("/api/chats", json={"chats": [{"id": -100, "title": "א", "enabled": True},
+                                              {"id": -200, "title": "ב", "enabled": True}]})
+    asyncio.run(client.app.state.scanner.scan())
+    movie = client.get("/api/library?kind=movie").json()["titles"][0]
+    best = client.app.state.db.q1("SELECT id FROM media WHERE chat_id = -100")["id"]  # the upload in group א
+
+    tg.gone = True  # you left group א
+    client.app.state.db.reset_chat(-100)
+    asyncio.run(client.app.state.scanner.scan())
+    rep = {r["chat"]: r for r in client.get("/api/status").json()["scan"]["report"]}
+    assert rep["א"]["no_access"] and rep["א"]["library"] == 1 and not rep["ב"].get("no_access")
+    assert client.get(f"/api/stream/{best}", headers={"Range": "bytes=0-9"}).status_code == 410
+    chk = client.get(f"/api/media/{best}/check").json()
+    assert chk["ok"] is False and chk["reason"] == "no_access" and chk["alt_id"] and chk["alt_id"] != best
+
+    client.post("/api/chats/-100/hide-media")
+    media = client.get(f"/api/titles/{movie['id']}").json()["media"]
+    assert media and media[0]["id"] == chk["alt_id"] and media[0]["versions"] == 1  # the movie stays, from group ב

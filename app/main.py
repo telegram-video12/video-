@@ -29,7 +29,7 @@ from .config import Settings
 from .db import Database, quality_of
 from .library import possible_duplicates
 from .parser import fuzzy_contains, normalize, skeleton
-from .telegram import Scanner, TelegramService
+from .telegram import Scanner, TelegramService, is_no_access
 from .tmdb import TMDB
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -758,6 +758,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             await tg.get_message(m["chat_id"], m["msg_id"])
         except FileNotFoundError as e:
             raise ApiError(410, "הקובץ נמחק מטלגרם") from e
+        except Exception as e:  # noqa: BLE001
+            if is_no_access(e):
+                raise ApiError(410, "אין גישה לקבוצה בטלגרם") from e
+            raise
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
@@ -767,6 +771,43 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         return StreamingResponse(tg.stream(m["chat_id"], m["msg_id"], start, end), status_code=status,
                                  headers=headers, media_type=m["mime"] or "video/mp4")
+
+    async def media_check(request: Request):
+        """The player could not load a video: is it gone from Telegram? Then find another upload of it that works."""
+        media_id = request.path_params["id"]
+        m = db.get_media(media_id)
+        if not m:
+            raise ApiError(404)
+
+        async def reachable(x: dict) -> str | None:  # None = fine, else why not
+            try:
+                await asyncio.wait_for(tg.get_message(x["chat_id"], x["msg_id"]), 8)
+                return None
+            except FileNotFoundError:
+                return "deleted"
+            except Exception as e:  # noqa: BLE001
+                return "no_access" if is_no_access(e) else "error"
+
+        reason = await reachable(m)
+        if reason is None:
+            return ok({"ok": True})
+        for v in db.versions(media_id):
+            if v["id"] != m["id"] and v["chat_id"] != m["chat_id"] and await reachable(v) is None:
+                return ok({"ok": False, "reason": reason, "alt_id": v["id"]})
+        return ok({"ok": False, "reason": reason, "alt_id": None})
+
+    async def hide_chat_media(request: Request):
+        """A group you cannot read any more: hide its uploads (titles with an upload elsewhere stay) and stop scanning it."""
+        try:
+            chat_id = int(request.path_params["id"])  # group ids are negative numbers
+        except ValueError as e:
+            raise ApiError(400, "bad id") from e
+        db.x("UPDATE media SET hidden = 1 WHERE chat_id = ?", (chat_id,))
+        db.x("UPDATE chats SET enabled = 0 WHERE id = ?", (chat_id,))
+        for r in scanner.status.get("report") or []:
+            if r.get("chat_id") == chat_id:
+                r["handled"] = True
+        return ok()
 
     async def thumb(request: Request):
         media_id = request.path_params["id"]
@@ -1142,6 +1183,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/watched-many", watched_many, methods=["POST"]),
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),
         R("/api/titles/{id:int}/merge", merge_title, methods=["POST"]),
+        R("/api/media/{id:int}/check", media_check), R("/api/chats/{id}/hide-media", hide_chat_media, methods=["POST"]),
         R("/api/titles/{id:int}/channels", title_channels), R("/api/titles/{id:int}/split", split_title, methods=["POST"]),
         R("/api/media/{id:int}", media_detail), R("/api/media/{id:int}", edit_media, methods=["PATCH"]),
         R("/api/progress/{id:int}", save_progress, methods=["POST"]),

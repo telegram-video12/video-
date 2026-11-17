@@ -16,6 +16,13 @@ CHUNK = 1024 * 1024  # Telegram serves files in 1 MiB-aligned parts
 MSG_CACHE_SECONDS = 20 * 60
 DOWNLOAD_STALL_SECONDS = 25  # no data from Telegram for this long -> reconnect
 NOT_VIDEO = "not-video"
+# Telegram's ways of saying "you cannot read this group any more" (left it, banned, deleted, made private)
+NO_ACCESS_ERRORS = {"ChannelPrivateError", "ChannelInvalidError", "ChatForbiddenError", "UserBannedInChannelError",
+                    "ChatIdInvalidError", "PeerIdInvalidError", "ChannelBannedError", "ChatAdminRequiredError"}
+
+
+def is_no_access(e: Exception) -> bool:
+    return type(e).__name__ in NO_ACCESS_ERRORS or (isinstance(e, ValueError) and "entity" in str(e).lower())
 VIDEO_EXTS = (".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv", ".flv")
 
 
@@ -369,6 +376,29 @@ class Scanner:
 
         await asyncio.to_thread(merge_similar_movies, self.db)
 
+    async def _scan_chat(self, chat: dict, rep: dict, last_seen: int) -> None:
+        count = 0
+        async for msg_id, v in self.tg.iter_messages(chat["id"], min_id=chat["last_msg_id"]):
+            count += 1
+            rep["checked"] = count
+            last_seen = max(last_seen, msg_id)
+            if v == NOT_VIDEO:
+                rep["files"] += 1
+                continue
+            if v is None:
+                continue
+            rep["videos"] += 1
+            if self._add_video(self.db, v, chat, self.min_duration):
+                self.status["added"] += 1
+                rep["added"] += 1
+            elif self.min_duration and ((v.duration and v.duration < self.min_duration)
+                                        or (not v.duration and v.size < 50 * 1024 * 1024)):
+                rep["short"] += 1
+            if count % 200 == 0:
+                self.db.set_chat_scanned(chat["id"], last_seen)
+        self.db.set_chat_scanned(chat["id"], last_seen)
+        log.info("scanned chat %s: %d messages checked", chat["id"], count)
+
     async def scan(self, chat_ids: list[int] | None = None) -> dict:
         if self._lock.locked():
             self._again = True  # e.g. a group was just chosen while another scan runs: scan again right after
@@ -392,26 +422,19 @@ class Scanner:
                     rep = {"chat": chat["title"], "checked": 0, "videos": 0, "added": 0, "short": 0,
                            "files": 0, "first": not chat["last_msg_id"]}
                     self.status["report"].append(rep)
-                    async for msg_id, v in self.tg.iter_messages(chat["id"], min_id=chat["last_msg_id"]):
-                        count += 1
-                        rep["checked"] = count
-                        last_seen = max(last_seen, msg_id)
-                        if v == NOT_VIDEO:
-                            rep["files"] += 1
-                            continue
-                        if v is None:
-                            continue
-                        rep["videos"] += 1
-                        if self._add_video(self.db, v, chat, self.min_duration):
-                            self.status["added"] += 1
-                            rep["added"] += 1
-                        elif self.min_duration and ((v.duration and v.duration < self.min_duration)
-                                                    or (not v.duration and v.size < 50 * 1024 * 1024)):
-                            rep["short"] += 1
-                        if count % 200 == 0:
-                            self.db.set_chat_scanned(chat["id"], last_seen)
-                    self.db.set_chat_scanned(chat["id"], last_seen)
-                    log.info("scanned chat %s: %d messages checked", chat["id"], count)
+                    try:
+                        await self._scan_chat(chat, rep, last_seen)
+                    except Exception as e:  # noqa: BLE001
+                        if not is_no_access(e):
+                            raise
+                        # left / banned / deleted: say so in Settings and go on with the other groups
+                        rep["no_access"] = True
+                        rep["chat_id"] = chat["id"]
+                        rep["library"] = self.db.q1("SELECT COUNT(*) AS n FROM media WHERE chat_id = ? AND hidden = 0",
+                                                    (chat["id"],))["n"]
+                        log.warning("no access to group %s: %s", chat["id"], type(e).__name__)
+                        continue
+                    count = rep["checked"]
                     if count:
                         changed = True
                         changed_chats.add(chat["id"])
