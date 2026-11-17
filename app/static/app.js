@@ -1890,7 +1890,8 @@ async function pageSettings(section) {
     dialogs.sort((a, b) => (b.enabled - a.enabled) || a.title.localeCompare(b.title, 'he'));
     box.innerHTML = `
       <input class="input" id="chat-filter" placeholder="חיפוש קבוצה..." style="width:100%">
-      <p class="muted" style="font-size:13px">💡 אם כל ערוץ הוא עונה אחרת של אותה סדרה (למשל ערוץ לכל סאגה), כתוב ליד כל ערוץ מסומן את מספר העונה שלו. אפשר גם לתת שם לעונה.</p>
+      <p class="muted" style="font-size:13px">💡 אם כל ערוץ הוא עונה אחרת של אותה סדרה (למשל ערוץ לכל סאגה), כתוב ליד כל ערוץ מסומן את מספר העונה שלו. אפשר גם לתת שם לעונה.<br>
+      🇮🇱 <b>מקור התוכן:</b> בערוץ של סדרות או סרטים ישראליים בחר "ישראלי" (ובערוץ של תוכן מחו״ל "מחו״ל"). כך "הישרדות" הישראלית לא תתערבב עם האמריקאית, ותקבל את הפוסטר הנכון.</p>
       <div class="chat-list">${dialogs.map((d) => `
         <div class="chat-item ${d.enabled ? 'on' : ''}" data-name="${esc(d.title.toLowerCase())}" data-id="${d.id}" data-title="${esc(d.title)}">
           <label class="chat-main">
@@ -1901,6 +1902,13 @@ async function pageSettings(section) {
           <div class="chat-season">
             <label>עונה <input class="input num" name="season" inputmode="numeric" placeholder="אוטו׳" value="${d.season ?? ''}"></label>
             <input class="input" name="season_label" placeholder="שם העונה (רשות), למשל: איסט בלו" value="${esc(d.season_label || '')}">
+          </div>
+          <div class="chat-season chat-origin">
+            <label>מקור התוכן <select class="input" name="origin">
+              <option value="" ${!d.origin ? 'selected' : ''}>אוטומטי (לפי הכיתוב)</option>
+              <option value="il" ${d.origin === 'il' ? 'selected' : ''}>🇮🇱 ישראלי</option>
+              <option value="intl" ${d.origin === 'intl' ? 'selected' : ''}>🌍 מחו״ל</option>
+            </select></label>
           </div>
         </div>`).join('')}</div>
       <button class="btn primary" id="save-chats">שמור וסרוק</button>`;
@@ -1919,6 +1927,7 @@ async function pageSettings(section) {
           enabled: el.querySelector('input[type=checkbox]').checked,
           season: el.querySelector('[name=season]').value.trim(),
           season_label: el.querySelector('[name=season_label]').value.trim(),
+          origin: el.querySelector('[name=origin]').value,
         }));
       try {
         await api('/api/chats', {method: 'POST', body: {chats}});

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import logging
 import time
 
@@ -47,7 +48,8 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
     if info.kind == "series" and not info.season_explicit and chat.get("default_season"):
         info.season = chat["default_season"]
     norm = normalize(info.name) or info.name
-    title_id = db.get_or_create_title(info.kind, info.name, norm, info.year, soft=True)
+    title_id = db.get_or_create_title(info.kind, info.name, norm, info.year, soft=True,
+                                      origin=media_origin(v.caption, v.file_name, chat))
     new_id = db.add_media(
         _soft=True,
         auto_norm=norm,
@@ -70,6 +72,21 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
     return new_id is not None
 
 
+# Where a show comes from, when the group does not say: hints in the Telegram text
+_IL_HINTS = re.compile(r"רשת\s*13|רשת\b|קשת\s*12|קשת\b|כאן\s*11|ערוץ\s*(?:1|2|10|12|13|14|24)\b|\bhot\b|\byes\b|"
+                       r"שודר\s*ב|ישראלית?\b|ישראליות\b", re.I)
+_INTL_HINTS = re.compile(r"מתורגמ|תרגום|תורגם|כתוביות|\bsubs?\b|hebsub", re.I)
+
+
+def media_origin(caption: str | None, file_name: str | None, chat: dict | None) -> str | None:
+    """'il' (Israeli), 'intl' (from abroad) or None (unknown). The group's own setting wins."""
+    if chat and chat.get("origin") in ("il", "intl"):
+        return chat["origin"]
+    text = f"{caption or ''} {file_name or ''}"
+    il, intl = bool(_IL_HINTS.search(text)), bool(_INTL_HINTS.search(text))
+    return "il" if il and not intl else "intl" if intl and not il else None
+
+
 def _corpus(db: Database) -> list:
     return [(r["caption"], r["duration"]) for r in db.q("SELECT caption, duration FROM media")]
 
@@ -84,7 +101,7 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: 
     if not chat:
         return 0
     rows = db.q("SELECT m.id, m.title_id, m.caption, m.file_name, m.manual, m.duration, m.auto_norm, "
-                "t.kind, t.norm_name, t.tmdb_id FROM media m "
+                "t.kind, t.norm_name, t.tmdb_id, t.origin FROM media m "
                 "JOIN titles t ON t.id = m.title_id WHERE m.chat_id = ?", (chat_id,))
     old = _stored(chat)  # what was used last time (auto + phrases)
     if corpus is None:
@@ -104,23 +121,26 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: 
             continue  # TMDB merged it into an entry with another name: leave it there
         info = parse_media(r["caption"], r["file_name"], fallback, new)
         norm = normalize(info.name) or info.name
-        if info.kind != r["kind"] or norm != r["norm_name"]:
+        origin = media_origin(r["caption"], r["file_name"], chat)
+        base = (r["norm_name"] or "").split("@")[0]
+        if info.kind != r["kind"] or norm != base or (origin and r["origin"] and origin != r["origin"]):
             # a season found in the name ("הישרדות 8 פרק 3") moves along with it
             season = info.season if info.kind == "series" and info.season_explicit else None
-            moves.append((r["id"], r["title_id"], info.kind, norm, info.name, info.year, season))
+            moves.append((r["id"], r["title_id"], info.kind, norm, info.name, info.year, season, origin))
     if not moves:
         return 0
     # 2. apply them in one transaction
     cache: dict[tuple[str, str], int] = {}
     with db._lock:
         conn = db.conn
-        for media_id, _current, kind, norm, name, year, season in moves:
-            key = (kind, norm, year)
+        for media_id, _current, kind, norm, name, year, season, origin in moves:
+            key = (kind, norm, year, origin)
             if key not in cache:
-                tid = db.find_title(conn, kind, norm, year)
+                tid, new_key = db.resolve_title(conn, kind, norm, year, origin)
                 cache[key] = tid or conn.execute(
-                    "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (kind, name, db.free_key(conn, kind, norm, year), normalize(name), year, time.time())).lastrowid
+                    "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at, origin) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (kind, name, new_key, normalize(name), year, time.time(), origin)).lastrowid
             conn.execute("UPDATE media SET title_id = ?, auto_norm = ?, season = COALESCE(?, season) WHERE id = ?",
                          (cache[key], norm, season, media_id))
         conn.execute("DELETE FROM titles WHERE id NOT IN (SELECT DISTINCT title_id FROM media)")

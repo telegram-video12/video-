@@ -156,3 +156,44 @@ def test_recheck_series_tied_to_a_foreign_show(client):
     recheck_foreign_matches(db)
     assert db.get_title(a)["tmdb_id"] is None and db.get_title(a)["tmdb_checked"] == 0
     assert db.get_title(b)["tmdb_id"] == 1  # an Israeli match stays
+
+
+def test_israeli_and_foreign_show_with_the_same_name_stay_apart(client):
+    login(client)
+    tg = client.app.state.tg
+    tg.messages = [
+        (1, vm(1, "הישרדות עונה 1 פרק 1\nשודר ב: רשת 13")),       # Israeli hint
+        (2, vm(2, "הישרדות עונה 1 פרק 1 מתורגם")),               # foreign hint
+        (3, vm(3, "הישרדות עונה 1 פרק 2")),                       # no hint: joins
+    ]
+    scan(client)
+    series = client.get("/api/library?kind=series").json()["titles"]
+    assert sorted(t["name"] for t in series) == ["הישרדות", "הישרדות"]
+    il = next(t for t in series if "ישראלי" in t["genres"])
+    assert il["media_count"] == 2  # episodes 1 and 2 of the Israeli show; the translated one is its own show
+    genres = [g["name"] for g in client.get("/api/genres?kind=series").json()["genres"]]
+    assert "ישראלי" in genres
+
+
+def test_group_marked_israeli(client):
+    login(client)
+    client.post("/api/chats", json={"chats": [{"id": -100, "title": "קבוצת סדרות", "enabled": True, "origin": "il"}]})
+    assert client.get("/api/dialogs").json()[0]["origin"] == "il"
+    client.app.state.scanner.status["running"] = False
+    asyncio.run(client.app.state.scanner.scan())
+    lib = client.get("/api/library?kind=series").json()["titles"]
+    assert lib and all("ישראלי" in t["genres"] for t in lib)
+
+
+def test_foreign_origin_puts_israeli_results_last():
+    t = TMDB("k")
+
+    async def fake_get(client, path, **params):
+        if path.startswith("/search/tv"):
+            return {"results": [{"id": 42, "name": "הישרדות", "original_name": "הישרדות", "original_language": "he"},
+                                {"id": 14658, "name": "הישרדות", "original_name": "Survivor", "original_language": "en"}]}
+        return {"id": int(path.split("/")[-1]), "name": "הישרדות", "genres": []}
+
+    t._get = fake_get
+    assert asyncio.run(t.lookup("series", "הישרדות", origin="intl"))["tmdb_id"] == 14658
+    assert asyncio.run(t.lookup("series", "הישרדות", origin="il"))["tmdb_id"] == 42

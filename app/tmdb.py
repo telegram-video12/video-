@@ -133,7 +133,7 @@ class TMDB:
         return [e for e in out if e["episode"] is not None]
 
     async def lookup(self, kind: str, name: str, year: int | None = None, tmdb_id: int | None = None,
-                     have_overview: bool = False, duration: float | None = None) -> dict | None:
+                     have_overview: bool = False, duration: float | None = None, origin: str | None = None) -> dict | None:
         media_type = "tv" if kind == "series" else "movie"
         async with self._client_ctx() as client:
             if tmdb_id:  # already matched: ONE call brings details + cast
@@ -157,13 +157,18 @@ class TMDB:
                 # A Hebrew name: when TMDB also has an ISRAELI show/movie with exactly this name, take it before a
                 # foreign one that only has this Hebrew translation ("הישרדות" = the Israeli show, not Survivor US).
                 from .parser import normalize
-                if any("\u0590" <= ch <= "\u05ff" for ch in name):
-                    want = normalize(name)
-                    local = [r for r in res[:10] if r.get("original_language") == "he"
-                             and want in {normalize(r.get("name") or r.get("title") or ""),
-                                          normalize(r.get("original_name") or r.get("original_title") or "")}]
-                    if local:
-                        res = local + [r for r in res if r not in local]
+                want = normalize(name)
+                exact_he = [r for r in res[:10] if r.get("original_language") == "he"
+                            and want in {normalize(r.get("name") or r.get("title") or ""),
+                                         normalize(r.get("original_name") or r.get("original_title") or "")}]
+                if origin == "il":  # the group/caption says Israeli: an Israeli result first
+                    local = exact_he or [r for r in res[:5] if r.get("original_language") == "he"]
+                    res = local + [r for r in res if r not in local]
+                elif origin == "intl":  # from abroad: Israeli results last
+                    res = [r for r in res if r.get("original_language") != "he"] + \
+                          [r for r in res if r.get("original_language") == "he"]
+                elif exact_he and any("\u0590" <= ch <= "\u05ff" for ch in name):
+                    res = exact_he + [r for r in res if r not in exact_he]
                 item = res[0]
                 # one details call gives genres, rating, length and cast (credits) in Hebrew
                 det = await self._get(client, f"/{media_type}/{item['id']}", language="he-IL",
@@ -199,7 +204,7 @@ class TMDB:
             longest = db.q1("SELECT MAX(duration) AS d FROM media WHERE title_id = ?", (title["id"],))
             meta = await self.lookup(title["kind"], title["name"], title.get("year"), tmdb_id,
                                      have_overview=bool(title.get("overview")),
-                                     duration=(longest or {}).get("d"))
+                                     duration=(longest or {}).get("d"), origin=title.get("origin"))
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:  # key revoked/replaced: no point trying the rest
                 if not self.stopped:

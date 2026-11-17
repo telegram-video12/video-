@@ -972,6 +972,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             d["enabled"] = bool(saved.get("enabled"))
             d["season"] = saved.get("default_season")
             d["season_label"] = saved.get("season_label")
+            d["origin"] = saved.get("origin") or ""
         return ok(out)
 
     async def set_chats(request: Request):
@@ -980,8 +981,11 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             season = str(c.get("season") or "").strip()
             season = int(season) if season.isdigit() and int(season) > 0 else None
             old = db.get_chat(chat_id)
+            origin = c.get("origin") if c.get("origin") in ("il", "intl") else None
             db.upsert_chat(chat_id, str(c.get("title") or c["id"]), bool(c.get("enabled")),
-                           season, str(c.get("season_label") or "").strip() or None)
+                           season, str(c.get("season_label") or "").strip() or None, origin)
+            if old and (old.get("origin") or None) != origin:
+                db.set_chat_branding(chat_id, None)  # re-file this group's shows with the new origin on the next scan
             if old and old.get("default_season") != season:
                 db.apply_chat_season(chat_id)
         return ok(db.chats())

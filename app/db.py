@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -92,6 +93,7 @@ CREATE TABLE IF NOT EXISTS progress (
 EP_KEY = ("(CASE WHEN t.kind = 'movie' THEN 'movie' WHEN m.episode IS NULL THEN 'id' || m.id "
           "ELSE m.season || ':' || m.episode END)")
 
+HEBREW = re.compile(r"[\u0590-\u05ff]")
 COMPLETE_RATIO = 0.92  # watched this much -> episode counts as finished
 MIN_STARTED = 10  # seconds; peeking at an episode for less than this does not count as watching it
 
@@ -120,6 +122,8 @@ class Database:
             self.conn.execute("ALTER TABLE chats ADD COLUMN season_label TEXT")
         if "branding" not in cols:
             self.conn.execute("ALTER TABLE chats ADD COLUMN branding TEXT")
+        if "origin" not in cols:  # 'il' / 'intl' / NULL (automatic): where this group's shows come from
+            self.conn.execute("ALTER TABLE chats ADD COLUMN origin TEXT")
         tcols = {r[1] for r in self.conn.execute("PRAGMA table_info(titles)")}
         if "name_key" not in tcols:  # normalize(name): lets uploads find a title by its TMDB name too
             from .parser import normalize
@@ -133,7 +137,8 @@ class Database:
                          ("intro_start", "REAL"), ("intro_end", "REAL"),  # where the opening song is (per series)
                          ("last_year", "INTEGER"),  # series: the year of its latest episode (TMDB)
                          ("name_manual", "INTEGER NOT NULL DEFAULT 0"),  # you renamed it: TMDB keeps out
-                         ("hidden_title", "INTEGER NOT NULL DEFAULT 0")):  # you hid it from the library
+                         ("hidden_title", "INTEGER NOT NULL DEFAULT 0"),  # you hid it from the library
+                         ("origin", "TEXT")):  # 'il' Israeli / 'intl' from abroad / NULL unknown
             if col not in tcols:  # TMDB details (genres, rating, length, cast)
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
@@ -181,13 +186,17 @@ class Database:
 
     # ------------------------------------------------------------------ chats
     def upsert_chat(self, chat_id: int, title: str, enabled: bool,
-                    default_season: int | None = None, season_label: str | None = None) -> None:
+                    default_season: int | None = None, season_label: str | None = None, origin: str | None = None) -> None:
         self.x(
-            """INSERT INTO chats (id, title, enabled, default_season, season_label) VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO chats (id, title, enabled, default_season, season_label, origin) VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET title = excluded.title, enabled = excluded.enabled,
-                 default_season = excluded.default_season, season_label = excluded.season_label""",
-            (chat_id, title, int(enabled), default_season, season_label or None),
+                 default_season = excluded.default_season, season_label = excluded.season_label,
+                 origin = excluded.origin""",
+            (chat_id, title, int(enabled), default_season, season_label or None, origin),
         )
+
+    def set_chat_branding(self, chat_id: int, branding) -> None:
+        self.x("UPDATE chats SET branding = ? WHERE id = ?", (branding, chat_id))
 
     def get_chat(self, chat_id: int) -> dict | None:
         return self.q1("SELECT * FROM chats WHERE id = ?", (chat_id,))
@@ -251,16 +260,40 @@ class Database:
                 return tid
         return None
 
-    def get_or_create_title(self, kind: str, name: str, norm_name: str, year: int | None, soft: bool = False) -> int:
+    @classmethod
+    def resolve_title(cls, conn, kind: str, norm_name: str, year: int | None, origin: str | None) -> tuple[int | None, str]:
+        """The title for this name and origin, or the key a new one gets. An Israeli and a foreign show with the
+        very same name ("הישרדות") are two titles: the second one gets the key "<name>@il" / "<name>@intl"."""
+        tid = cls.find_title(conn, kind, norm_name, year)
+        if tid is not None and origin:
+            row = conn.execute("SELECT origin FROM titles WHERE id = ?", (tid,)).fetchone()
+            if row and row[0] and row[0] != origin:
+                tid = None
+                alt = conn.execute("SELECT id FROM titles WHERE kind = ? AND norm_name = ?",
+                                   (kind, f"{norm_name}@{origin}")).fetchone()
+                if alt:
+                    return alt[0], ""
+                return None, f"{norm_name}@{origin}"
+            if row and not row[0]:  # the first known origin is taken by the title
+                conn.execute("UPDATE titles SET origin = ? WHERE id = ?", (origin, tid))
+        if tid is None and origin:
+            alt = conn.execute("SELECT id FROM titles WHERE kind = ? AND norm_name = ?",
+                               (kind, f"{norm_name}@{origin}")).fetchone()
+            if alt:
+                return alt[0], ""
+        return tid, cls.free_key(conn, kind, norm_name, year)
+
+    def get_or_create_title(self, kind: str, name: str, norm_name: str, year: int | None, soft: bool = False,
+                            origin: str | None = None) -> int:
         from .parser import normalize
 
         with self._lock:
-            tid = self.find_title(self.conn, kind, norm_name, year)
+            tid, key = self.resolve_title(self.conn, kind, norm_name, year, origin)
         if tid:
             return tid
         return self.x(
-            "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (kind, name, self.free_key(self.conn, kind, norm_name, year), normalize(name), year, time.time()),
+            "INSERT INTO titles (kind, name, norm_name, name_key, year, created_at, origin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (kind, name, key, normalize(name), year, time.time(), origin),
             soft=soft,
         )
 
@@ -290,7 +323,7 @@ class Database:
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked",
                    "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details",
-                   "intro_start", "intro_end", "last_year", "name_manual", "hidden_title"}
+                   "intro_start", "intro_end", "last_year", "name_manual", "hidden_title", "origin"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -351,6 +384,9 @@ class Database:
                     t["genres"] = json.loads(t["genres"] or "[]")
                 except ValueError:
                     t["genres"] = []
+                # "ישראלי" as a genre: an Israeli group/caption, or TMDB's original name is in Hebrew
+                if (t.get("origin") == "il" or HEBREW.search(t["original_name"] or "")) and "ישראלי" not in t["genres"]:
+                    t["genres"].append("ישראלי")
             self._titles_cache = c = (self.version, self.soft_version, time.time(), rows)
         return c[3]
 
@@ -379,7 +415,7 @@ class Database:
     def list_titles(self) -> list[dict]:
         return self.q(
             f"""
-            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.poster, t.backdrop, t.overview, t.genres, t.rating,
+            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.poster, t.backdrop, t.overview, t.genres, t.rating,
                    t.original_name,
                    COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,
