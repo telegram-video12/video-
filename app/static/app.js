@@ -64,6 +64,7 @@ async function route() {
   if (prev && pageState[prev]) pageState[prev].scrollY = window.scrollY;
   if (cleanup) { try { cleanup(); } catch (_) {} cleanup = null; }
   closeAllSheets();
+  if (!(location.hash || '').startsWith(`#/title/${editTitleId}`)) editMode = false;  // edit mode ends when you leave
   const hash = location.hash.replace(/^#/, '') || '/';
   route.current = hash;
   const [path] = hash.split('?');
@@ -805,6 +806,7 @@ function posterCard(t) {
 
 // -------------------------------------------------------------------- title
 let editMode = false;
+let editTitleId = null;  // the series/movie being edited
 
 async function pageTitle(id) {
   // re-draw after a change without jumping back to the top
@@ -950,7 +952,7 @@ async function pageTitle(id) {
       reload();
       return;
     }
-    if (v === 'edit') { editMode = !editMode; pageTitle(id); }
+    if (v === 'edit') { editMode = !editMode; editTitleId = id; pageTitle(id); }
     else if (v === 'all') markMany(visible.map((m) => m.id), true, isSeries ? 'הסדרה' : 'הסרט');
     else if (v === 'reset') markMany(visible.map((m) => m.id), false, isSeries ? 'הסדרה' : 'הסרט');
   };
@@ -1052,7 +1054,8 @@ function editTitlePanel(t) {
 function bindEditTitle(t) {
   const panel = $app.querySelector('#edit-title');
   const val = (n) => panel.querySelector(`[name=${n}]`).value;
-  const done = (id) => { libraryCache = null; location.hash = `#/title/${id}`; pageTitle(id); };
+  // saved: leave edit mode and show the page as it now looks
+  const done = (id) => { libraryCache = null; editMode = false; location.hash = `#/title/${id}`; pageTitle(id); };
   panel.querySelector('#save-title').onclick = async () => {
     try {
       await api(`/api/titles/${t.id}`, {method: 'PATCH', body: {

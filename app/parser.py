@@ -18,7 +18,7 @@ EPISODE_PATTERNS = [
         r"\bseason[\s._-]*(?P<season>\d{1,2})[\s._,-]*(?:episode|ep)[\s._-]*(?P<episode>\d{1,4})\b", re.I
     ),
     re.compile(r"עונה[\s._:-]*(?P<season>\d{1,2})[\s._,:-]*(?:-|,)?[\s]*פרק[\s._:-]*(?P<episode>\d{1,4})"),
-    re.compile(r"(?<![א-ת])ע['׳\"]?[\s._-]*(?P<season>\d{1,2})[\s._,-]*פ['׳\"]?[\s._-]*(?P<episode>\d{1,4})"),
+    re.compile(r"(?<![א-ת])עו?['׳\"]?[\s._-]*(?P<season>\d{1,2})[\s._,-]*פר?['׳\"]?[\s._-]*(?P<episode>\d{1,4})"),
     re.compile(r"פרק[\s._:-]*(?P<episode>\d{1,4})[\s._,:-]*עונה[\s._:-]*(?P<season>\d{1,2})"),
     re.compile(r"\b(?:episode|ep)[\s._-]*(?P<episode>\d{1,4})\b", re.I),
     re.compile(r"פרק[\s._:-]*(?P<episode>\d{1,4})"),
@@ -29,6 +29,7 @@ SEASON_ONLY = [
     re.compile(r"\bseason[\s._-]*(\d{1,2})\b", re.I),
     re.compile(r"\bS(\d{1,2})\b"),
     re.compile(r"עונה[\s._:-]*(\d{1,2})"),
+    re.compile(r"(?<![א-ת])עו['׳]?[\s._-]*(\d{1,2})\b"),
 ]
 
 YEAR_RE = re.compile(r"[\(\[\s._-]((?:19|20)\d{2})(?:[\)\]\s._-]|$)")
