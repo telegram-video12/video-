@@ -1037,6 +1037,12 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
             retry_unmatched(db)
             recheck_foreign_matches(db)
+            if db.get_pref("ep_names_reset") != "1":  # names saved before a TMDB link was changed by hand: fetch again
+                with db._lock:
+                    db.conn.execute("DELETE FROM episode_info")
+                    db.conn.execute("DELETE FROM episode_seasons")
+                    db.conn.commit()
+                db.set_pref("ep_names_reset", "1")
             refresh_series_years(db)
             if db.get_pref("thumbs_retry") != "1":  # pictures wrongly marked "none" during connection problems
                 for f in (settings.data_dir / "thumbs").glob("*.none"):
