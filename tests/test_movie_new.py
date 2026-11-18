@@ -32,29 +32,20 @@ def test_an_earlier_movie_is_not_a_sequel():
     assert rows[1]["sequel"] == 0
 
 
-def test_new_on_the_site_by_the_day_it_arrived(tmp_path):
-    from app.library import add_video
-    from app.telegram import VideoMessage
+def test_release_dates_from_tmdb():
+    from app.tmdb import _day, available
 
-    db = Database(tmp_path / "y.db")
-    old = time.time() - 400 * 86400  # posted on Telegram long ago
-    chat = {"id": -5, "title": "סרטים", "last_msg_id": 0, "default_season": None}
-    # a group's very first scan: its old posts are not "new"
-    add_video(db, VideoMessage(-5, 1, "הקיץ הישן 2010", "", 10, "video/mp4", 5400, 0, 0, old), chat)
-    chat["last_msg_id"] = 1
-    # later scans: whatever they find is new on the site, even if it came out in cinemas long ago
-    add_video(db, VideoMessage(-5, 2, "הלילה החדש 2023", "", 10, "video/mp4", 5400, 0, 0, old), chat)
-    add_video(db, VideoMessage(-5, 3, "המשפחה שלנו עונה 1 פרק 1", "", 10, "video/mp4", 1500, 0, 0, old), chat)
-    rows = {t["name"]: t for t in db.library_titles()}
-    now = time.time()
-    assert rows["הקיץ הישן"]["first_found"] < now - 300 * 86400
-    assert rows["הלילה החדש"]["first_found"] > now - 60
-    s = rows["המשפחה שלנו"]
-    assert s["ep_new_at"] > now - 60 and (s["ep_new_season"], s["ep_new_episode"]) == (1, 1)
-    # another upload of an episode that was already here is not a new episode
-    db.x("UPDATE media SET found_at = ? WHERE chat_id = -5 AND msg_id = 3", (old,))
-    add_video(db, VideoMessage(-5, 4, "המשפחה שלנו עונה 1 פרק 1 1080p", "", 10, "video/mp4", 1500, 0, 0, old), chat)
-    assert db.site_new_episodes(now - 86400) == {}
+    movie = {"release_date": "2026-03-01", "release_dates": {"results": [
+        {"iso_3166_1": "US", "release_dates": [{"type": 3, "release_date": "2026-03-01T00:00:00.000Z"},
+                                               {"type": 4, "release_date": "2026-11-10T00:00:00.000Z"}]},
+        {"iso_3166_1": "IL", "release_dates": [{"type": 4, "release_date": "2026-11-12T00:00:00.000Z"}]}]}}
+    assert available("movie", movie)["avail_at"] == _day("2026-11-10")  # digital, not the cinema
+    assert available("movie", {"release_date": "2025-01-05"})["avail_at"] == _day("2025-01-05")
+    assert available("movie", {})["avail_at"] == 0
+    tv = {"last_episode_to_air": {"air_date": "2026-11-15", "season_number": 2, "episode_number": 8,
+                                  "episode_type": "finale"}}
+    assert available("tv", tv) == {"avail_at": _day("2026-11-15"), "last_ep_season": 2, "last_ep_number": 8,
+                                   "last_ep_finale": 1}
 
 
 def test_badges_in_the_api(client):
@@ -63,12 +54,27 @@ def test_badges_in_the_api(client):
     login(client)
     scan(client)
     db = client.app.state.db
-    lib = client.get("/api/library").json()["titles"]
-    assert {t["site_new"] for t in lib} <= {None, "movie", "episode"}
-    db.x("UPDATE media SET found_at = ?", (time.time() - 10 * 86400,))
     lib = {t["kind"]: t for t in client.get("/api/library").json()["titles"]}
-    assert lib["movie"]["site_new"] == "movie"  # 10 days < 30
-    assert lib["series"]["site_new"] is None  # 10 days > 7
-    client.post("/api/settings", json={"new_days": {"movie": 5, "series": 14, "finale": 30}})
+    assert lib["movie"]["site_new"] is None  # TMDB said nothing yet
+    now = time.time()
+    db.x("UPDATE titles SET avail_at = ? WHERE kind = 'movie'", (now - 10 * 86400,))
+    sid = lib["series"]["id"]
+    eps = client.get(f"/api/titles/{sid}").json()["media"]
+    last = max(eps, key=lambda m: ((m["season"] or 1), m["episode"] or 0))
+    # TMDB: the latest episode aired 3 days ago, but it is not on the site yet -> nothing new
+    db.x("UPDATE titles SET avail_at = ?, last_ep_season = ?, last_ep_number = ?, last_ep_finale = 0 WHERE id = ?",
+         (now - 3 * 86400, last["season"] or 1, (last["episode"] or 0) + 1, sid))
     lib = {t["kind"]: t for t in client.get("/api/library").json()["titles"]}
-    assert lib["movie"]["site_new"] is None and lib["series"]["site_new"] == "episode"
+    assert lib["movie"]["site_new"] == "movie" and lib["series"]["site_new"] is None
+    # ... it is on the site
+    db.x("UPDATE titles SET last_ep_number = ? WHERE id = ?", (last["episode"], sid))
+    lib = {t["kind"]: t for t in client.get("/api/library").json()["titles"]}
+    assert lib["series"]["site_new"] == "episode"
+    # 10 days ago: past the 7 days, unless it ended the season (30)
+    db.x("UPDATE titles SET avail_at = ? WHERE id = ?", (now - 10 * 86400, sid))
+    assert {t["kind"]: t for t in client.get("/api/library").json()["titles"]}["series"]["site_new"] is None
+    db.x("UPDATE titles SET last_ep_finale = 1 WHERE id = ?", (sid,))
+    assert {t["kind"]: t for t in client.get("/api/library").json()["titles"]}["series"]["site_new"] == "episode"
+    client.post("/api/settings", json={"new_days": {"movie": 5, "series": 7, "finale": 30}})
+    lib = {t["kind"]: t for t in client.get("/api/library").json()["titles"]}
+    assert lib["movie"]["site_new"] is None

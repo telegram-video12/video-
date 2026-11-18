@@ -153,7 +153,11 @@ class Database:
                          ("name_manual", "INTEGER NOT NULL DEFAULT 0"),  # you renamed it: TMDB keeps out
                          ("hidden_title", "INTEGER NOT NULL DEFAULT 0"),  # you hid it from the library
                          ("origin", "TEXT"),  # 'il' Israeli / 'intl' from abroad / NULL unknown
-                         ("collection_id", "INTEGER")):  # movie: its TMDB movie series (0 = none, NULL = not known yet)  # 'il' Israeli / 'intl' from abroad / NULL unknown
+                         ("collection_id", "INTEGER"),
+                         # when TMDB says it came out to watch (movie: digital release; series: its latest aired
+                         # episode, which one, and whether it ended a season). NULL = not asked yet, 0 = unknown
+                         ("avail_at", "REAL"), ("last_ep_season", "INTEGER"), ("last_ep_number", "INTEGER"),
+                         ("last_ep_finale", "INTEGER")):  # movie: its TMDB movie series (0 = none, NULL = not known yet)  # 'il' Israeli / 'intl' from abroad / NULL unknown
             if col not in tcols:  # TMDB details (genres, rating, length, cast)
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
@@ -342,7 +346,8 @@ class Database:
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked",
                    "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details",
-                   "intro_start", "intro_end", "last_year", "name_manual", "hidden_title", "origin", "collection_id"}
+                   "intro_start", "intro_end", "last_year", "name_manual", "hidden_title", "origin", "collection_id",
+                   "avail_at", "last_ep_season", "last_ep_number", "last_ep_finale"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -436,9 +441,10 @@ class Database:
             rows = self.list_titles()
             fresh = self.new_episodes()
             mark_sequels(rows)
-            eps = self.site_new_episodes(time.time() - 60 * 86400)
+            has_latest = self.have_latest_episode(time.time() - 61 * 86400)
             for t in rows:
-                t["ep_new_at"], t["ep_new_season"], t["ep_new_episode"], t["ep_finale"] = eps.get(t["id"], (None,) * 4)
+                if t["kind"] == "series" and t["id"] not in has_latest:
+                    t["avail_at"] = None  # the newest episode TMDB knows is not on the site yet: nothing new to watch
                 t["new_count"], t["new_at"] = fresh.get(t["id"], (0, None))  # search keys and parsed genres, computed once per change
                 t["_key"] = normalize(t["name"] or "")
                 t["_okey"] = normalize(t["original_name"] or "")
@@ -453,30 +459,14 @@ class Database:
             self._titles_cache = c = (self.version, self.soft_version, time.time(), rows)
         return c[3]
 
-    def site_new_episodes(self, since: float) -> dict[int, tuple]:
-        """Series that got a NEW episode on the site since `since` (another upload of an episode that was already
-        here does not count): {title_id: (when, season, episode, is it the last episode of its season)}."""
-        rows = self.q(
-            """SELECT m.title_id, m.season, m.episode, MIN(m.found_at) AS f FROM media m
-               JOIN titles t ON t.id = m.title_id AND t.kind = 'series'
-               WHERE m.hidden = 0 AND m.found_at > ? AND m.episode IS NOT NULL
-                 AND NOT EXISTS (SELECT 1 FROM media o WHERE o.title_id = m.title_id AND o.season IS m.season
-                                 AND o.episode = m.episode AND o.hidden = 0 AND o.found_at <= ?)
-               GROUP BY m.title_id, m.season, m.episode""", (since, since))
-        out: dict[int, tuple] = {}
-        for r in rows:  # the newest one of each series
-            cur = out.get(r["title_id"])
-            if not cur or (r["f"], r["season"] or 0, r["episode"]) > (cur[0], cur[1] or 0, cur[2]):
-                out[r["title_id"]] = (r["f"], r["season"], r["episode"], False)
-        if out:  # the season's last episode (known from TMDB once the series was opened): the badge stays longer
-            ids = ",".join(str(i) for i in out)
-            last = {(r["title_id"], r["season"]): r["n"] for r in self.q(
-                f"SELECT title_id, season, MAX(episode) AS n FROM episode_info WHERE title_id IN ({ids}) "
-                "GROUP BY title_id, season")}
-            for tid, (f, se, ep, _) in out.items():
-                n = last.get((tid, se or 1))
-                out[tid] = (f, se, ep, bool(n and ep >= n))
-        return out
+    def have_latest_episode(self, since: float) -> set[int]:
+        """Series that aired an episode lately (by TMDB) AND have that episode (or a later one) on the site."""
+        return {r["title_id"] for r in self.q(
+            """SELECT DISTINCT m.title_id FROM titles t JOIN media m ON m.title_id = t.id AND m.hidden = 0
+               WHERE t.kind = 'series' AND t.avail_at > ? AND t.last_ep_number IS NOT NULL
+                 AND (COALESCE(m.season, 1) > COALESCE(t.last_ep_season, 1)
+                      OR (COALESCE(m.season, 1) = COALESCE(t.last_ep_season, 1) AND m.episode >= t.last_ep_number))""",
+            (since,))}
 
     def new_episodes(self) -> dict[int, tuple[int, float]]:
         """Series you watch that got episodes AFTER you last watched them (and you have not seen yet):
@@ -503,13 +493,12 @@ class Database:
     def list_titles(self) -> list[dict]:
         return self.q(
             f"""
-            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.collection_id, t.poster, t.backdrop, t.overview, t.genres, t.rating,
+            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.collection_id, t.avail_at, t.last_ep_finale, t.poster, t.backdrop, t.overview, t.genres, t.rating,
                    t.original_name,
                    COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,
                    MAX(m.added_at) AS last_added,
                    MAX(m.id) AS last_in,
-                   MIN(m.found_at) AS first_found,
                    MIN(m.id) AS first_media_id,
                    COUNT(DISTINCT CASE WHEN p.completed = 1 THEN {EP_KEY} END) AS watched_count,
                    MAX(CASE WHEN p.completed = 1 OR p.position >= {MIN_STARTED} THEN p.updated_at END) AS last_watched,

@@ -73,6 +73,9 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
     )
     if new_id is None:
         db.delete_empty_titles()
+    elif info.kind == "series":  # a new episode: ask TMDB again when it aired (for the "פרק חדש" badge)
+        db.x("UPDATE titles SET tmdb_details = 0 WHERE id = ? AND tmdb_id IS NOT NULL AND tmdb_details = 1",
+             (title_id,), soft=True)
     return new_id is not None
 
 
@@ -375,6 +378,14 @@ def refresh_series_years(db: Database) -> None:
         return
     db.x("UPDATE titles SET tmdb_details = 0 WHERE kind = 'series' AND tmdb_id IS NOT NULL", soft=True)
     db.set_pref("series_last_year", "1")
+
+
+def refresh_release_dates(db: Database) -> None:
+    """Once: everything matched on TMDB fetches its details again to learn when it came out to watch."""
+    if db.get_pref("avail_dates") == "1":
+        return
+    db.x("UPDATE titles SET tmdb_details = 0 WHERE tmdb_id IS NOT NULL AND avail_at IS NULL", soft=True)
+    db.set_pref("avail_dates", "1")
 
 
 def refresh_movie_collections(db: Database) -> None:

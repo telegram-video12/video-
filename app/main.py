@@ -389,15 +389,15 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         return out
 
     def site_new(t: dict, days: dict[str, int], now: float) -> str | None:
-        """"movie": a movie that ARRIVED on the site lately (not by its cinema date); "episode": a series that
-        got a new episode lately (the last episode of a season keeps the badge longer)."""
+        """By TMDB's dates: "movie" - a movie that came out to watch lately (its digital release, not the cinema);
+        "episode" - a series whose latest episode aired lately and is on the site (a season's last one stays longer)."""
+        at = t.get("avail_at")
+        if not at or at > now:
+            return None
         if t["kind"] == "movie":
-            return "movie" if (t.get("first_found") or 0) > now - days["movie"] * 86400 else None
-        if t.get("ep_new_at"):
-            limit = days["finale"] if t.get("ep_finale") else days["series"]
-            if t["ep_new_at"] > now - limit * 86400:
-                return "episode"
-        return None
+            return "movie" if at > now - days["movie"] * 86400 else None
+        limit = days["finale"] if t.get("last_ep_finale") else days["series"]
+        return "episode" if at > now - limit * 86400 else None
 
     def card(t: dict, days: dict | None = None) -> dict:
         t = {k: v for k, v in t.items() if not k.startswith("_")}
@@ -1114,7 +1114,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         try:
             await asyncio.to_thread(migrate_norms, db)
             await asyncio.to_thread(repair, db)
-            from .library import (merge_similar_movies, recheck_foreign_matches, refresh_movie_collections,
+            from .library import (merge_similar_movies, recheck_foreign_matches, refresh_movie_collections, refresh_release_dates,
                                   refresh_series_years, retry_unmatched)
 
             retry_unmatched(db)
@@ -1127,6 +1127,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                 db.set_pref("ep_names_reset", "1")
             refresh_series_years(db)
             refresh_movie_collections(db)
+            refresh_release_dates(db)
             if db.get_pref("thumbs_retry") != "1":  # pictures wrongly marked "none" during connection problems
                 for f in (settings.data_dir / "thumbs").glob("*.none"):
                     f.unlink(missing_ok=True)

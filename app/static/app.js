@@ -802,7 +802,7 @@ function posterCard(t) {
   const corner = t.new_count ? `<span class="badge new corner">${t.new_count === 1 ? 'פרק חדש' : `${t.new_count} פרקים חדשים`}</span>`
     : t.sequel ? '<span class="badge new corner">✨ סרט המשך</span>'
     : watchedAll ? '<span class="badge ok corner">✓ נצפה</span>'
-    // arrived on the site lately (by the day a scan found it, not by its cinema/TV date)
+    // came out to watch lately, by TMDB (a movie's digital release, a series' latest aired episode)
     : t.site_new === 'movie' ? '<span class="badge new corner">סרט חדש</span>'
     : t.site_new === 'episode' ? '<span class="badge new corner">פרק חדש</span>'
     : t.watched_count ? `<span class="badge accent corner">${t.kind === 'series' ? `${t.watched_count}/${t.media_count}` : 'בצפייה'}</span>` : '';
@@ -1714,7 +1714,7 @@ async function pageSettings(section) {
       </div>
       <p class="muted" style="font-size:13px;margin-bottom:0">כל עוד האתר פועל, הוא סורק לבד ${st.scan_interval_minutes ? `כל ${st.scan_interval_minutes} דקות` : ''} ובכל הפעלה. סריקה מלאה לא מוחקת עריכות שעשית.</p>
       <h4 style="margin:18px 0 6px">תווית "חדש"</h4>
-      <p class="muted" style="font-size:13px;margin-top:0">נקבעת לפי היום שבו הסריקה מצאה את הסרט או הפרק באתר, לא לפי תאריך היציאה שלו.</p>
+      <p class="muted" style="font-size:13px;margin-top:0">נקבעת לפי TMDB: סרט – לפי היציאה הדיגיטלית שלו (לצפייה בבית, לא לקולנוע); סדרה – לפי מועד השידור של הפרק האחרון שיש לך באתר.</p>
       <div class="newdays">
         <label>"סרט חדש" למשך <input type="number" min="1" max="60" id="nd-movie" value="${st.new_days?.movie ?? 30}"> ימים</label>
         <label>"פרק חדש" למשך <input type="number" min="1" max="60" id="nd-series" value="${st.new_days?.series ?? 7}"> ימים</label>

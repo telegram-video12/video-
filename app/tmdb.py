@@ -4,12 +4,40 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 import httpx
 
 log = logging.getLogger(__name__)
 API = "https://api.themoviedb.org/3"
 IMG = "https://image.tmdb.org/t/p/"
+
+
+EXTRA = {"movie": "credits,release_dates", "tv": "credits"}
+
+
+def _day(text: str | None) -> float | None:
+    """'2026-11-02' or '2026-11-02T00:00:00.000Z' -> a time (UTC), None when missing."""
+    try:
+        return datetime.strptime((text or "")[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def available(media_type: str, item: dict) -> dict:
+    """When it became available to watch, by TMDB (for the "סרט חדש" / "פרק חדש" badges; 0 = TMDB does not know).
+    A movie: its DIGITAL release (streaming / buying online; the earliest country), else its release date - so a
+    movie that was in cinemas months ago and came out to watch at home this week counts as new.
+    A series: the air date of its latest aired episode (which one, and whether it ended the season)."""
+    if media_type == "movie":
+        digital = [_day(d.get("release_date")) for c in (item.get("release_dates") or {}).get("results") or []
+                   for d in c.get("release_dates") or [] if d.get("type") == 4]
+        digital = [d for d in digital if d]
+        return {"avail_at": min(digital) if digital else (_day(item.get("release_date")) or 0)}
+    last = item.get("last_episode_to_air") or {}
+    return {"avail_at": _day(last.get("air_date")) or 0, "last_ep_season": last.get("season_number"),
+            "last_ep_number": last.get("episode_number"),
+            "last_ep_finale": int(last.get("episode_type") == "finale")}
 
 
 class TMDB:
@@ -138,7 +166,7 @@ class TMDB:
         async with self._client_ctx() as client:
             if tmdb_id:  # already matched: ONE call brings details + cast
                 item = await self._get(client, f"/{media_type}/{tmdb_id}", language="he-IL",
-                                       append_to_response="credits")
+                                       append_to_response=EXTRA[media_type])
             else:
                 params = {"query": name, "language": "he-IL"}
                 if year:
@@ -172,7 +200,7 @@ class TMDB:
                 item = res[0]
                 # one details call gives genres, rating, length and cast (credits) in Hebrew
                 det = await self._get(client, f"/{media_type}/{item['id']}", language="he-IL",
-                                      append_to_response="credits")
+                                      append_to_response=EXTRA[media_type])
                 item = {**item, **det}
             overview = item.get("overview")
             if not overview and not have_overview:  # English overview only when there is none at all
@@ -197,6 +225,7 @@ class TMDB:
             "rating": round(float(item["vote_average"]), 1) if item.get("vote_average") and votes >= 5 else None,
             "runtime": int(runtime) if runtime else None,
             "cast": cast,
+            **available(media_type, item),
             # movie: the movie series it belongs to (Spider-Man 1, 2, 3...); 0 = none
             "collection_id": ((item.get("belongs_to_collection") or {}).get("id") or 0) if media_type == "movie" else None,
         }
@@ -241,6 +270,10 @@ class TMDB:
             tmdb_details=1,
             last_year=meta.get("last_year"),
             collection_id=meta.get("collection_id"),
+            avail_at=meta.get("avail_at"),
+            last_ep_season=meta.get("last_ep_season"),
+            last_ep_number=meta.get("last_ep_number"),
+            last_ep_finale=meta.get("last_ep_finale"),
         )
         # The same movie/series under another name (e.g. Hebrew vs English caption) -> one entry.
         # Always merge the newer entry into the older one so concurrent lookups agree.
