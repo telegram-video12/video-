@@ -197,6 +197,8 @@ class TMDB:
             "rating": round(float(item["vote_average"]), 1) if item.get("vote_average") and votes >= 5 else None,
             "runtime": int(runtime) if runtime else None,
             "cast": cast,
+            # movie: the movie series it belongs to (Spider-Man 1, 2, 3...); 0 = none
+            "collection_id": ((item.get("belongs_to_collection") or {}).get("id") or 0) if media_type == "movie" else None,
         }
 
     async def enrich_title(self, db, title: dict, tmdb_id: int | None = None) -> bool:
@@ -238,6 +240,7 @@ class TMDB:
             cast_json=json.dumps(meta.get("cast") or [], ensure_ascii=False),
             tmdb_details=1,
             last_year=meta.get("last_year"),
+            collection_id=meta.get("collection_id"),
         )
         # The same movie/series under another name (e.g. Hebrew vs English caption) -> one entry.
         # Always merge the newer entry into the older one so concurrent lookups agree.

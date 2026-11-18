@@ -373,6 +373,15 @@ def refresh_series_years(db: Database) -> None:
     db.set_pref("series_last_year", "1")
 
 
+def refresh_movie_collections(db: Database) -> None:
+    """Once: movies already matched on TMDB fetch their details again to learn which movie series they belong to."""
+    if db.get_pref("movie_collections") == "1":
+        return
+    db.x("UPDATE titles SET tmdb_details = 0 WHERE kind = 'movie' AND tmdb_id IS NOT NULL AND collection_id IS NULL",
+         soft=True)
+    db.set_pref("movie_collections", "1")
+
+
 def retry_unmatched(db: Database) -> None:
     """Once after the smarter TMDB search arrived: look again for titles TMDB did not find before."""
     if db.get_pref("tmdb_retry") == "smart1":

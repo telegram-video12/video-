@@ -382,7 +382,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
     async def home_rows(request: Request):
         """Home page extras: new episodes of what you watch, and rows of the genres you watch most."""
         items = db.library_titles()
-        fresh = sorted((t for t in items if t["new_count"]), key=lambda t: t["new_at"] or 0, reverse=True)
+        # "✨ חדש בשבילך": new episodes of series you watch + the next movies of movie series you watched
+        fresh = sorted((t for t in items if t["new_count"] or t.get("sequel")),
+                       key=lambda t: t["new_at"] or t["last_added"] or 0, reverse=True)
         # your taste: genres of what you watched (recent watching counts a little more)
         score: dict[str, float] = {}
         watched = sorted((t for t in items if t["last_watched"]), key=lambda t: t["last_watched"], reverse=True)
@@ -1076,7 +1078,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         try:
             await asyncio.to_thread(migrate_norms, db)
             await asyncio.to_thread(repair, db)
-            from .library import merge_similar_movies, recheck_foreign_matches, refresh_series_years, retry_unmatched
+            from .library import (merge_similar_movies, recheck_foreign_matches, refresh_movie_collections,
+                                  refresh_series_years, retry_unmatched)
 
             retry_unmatched(db)
             recheck_foreign_matches(db)
@@ -1087,6 +1090,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                     db.conn.commit()
                 db.set_pref("ep_names_reset", "1")
             refresh_series_years(db)
+            refresh_movie_collections(db)
             if db.get_pref("thumbs_retry") != "1":  # pictures wrongly marked "none" during connection problems
                 for f in (settings.data_dir / "thumbs").glob("*.none"):
                     f.unlink(missing_ok=True)

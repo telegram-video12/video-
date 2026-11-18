@@ -98,6 +98,20 @@ COMPLETE_RATIO = 0.92  # watched this much -> episode counts as finished
 MIN_STARTED = 10  # seconds; peeking at an episode for less than this does not count as watching it
 
 
+def mark_sequels(rows: list[dict]) -> None:
+    """A movie you have not watched gets "sequel" when you watched an EARLIER movie of the same movie series
+    (TMDB collection), e.g. you saw "אבא גנוב" and "אבא גנוב 2" is in the library."""
+    seen: dict[int, int] = {}  # collection -> the earliest year you watched in it
+    for t in rows:
+        if t["kind"] == "movie" and t.get("collection_id") and t["last_watched"]:
+            y = t["year"] or 0
+            seen[t["collection_id"]] = min(seen.get(t["collection_id"], y), y)
+    for t in rows:
+        c = t.get("collection_id")
+        t["sequel"] = int(bool(t["kind"] == "movie" and c and c in seen and not t["last_watched"]
+                               and not t["watched_count"] and (t["year"] or 9999) > seen[c]))
+
+
 class Database:
     def __init__(self, path: Path | str):
         self.path = str(path)
@@ -138,7 +152,8 @@ class Database:
                          ("last_year", "INTEGER"),  # series: the year of its latest episode (TMDB)
                          ("name_manual", "INTEGER NOT NULL DEFAULT 0"),  # you renamed it: TMDB keeps out
                          ("hidden_title", "INTEGER NOT NULL DEFAULT 0"),  # you hid it from the library
-                         ("origin", "TEXT")):  # 'il' Israeli / 'intl' from abroad / NULL unknown
+                         ("origin", "TEXT"),  # 'il' Israeli / 'intl' from abroad / NULL unknown
+                         ("collection_id", "INTEGER")):  # movie: its TMDB movie series (0 = none, NULL = not known yet)  # 'il' Israeli / 'intl' from abroad / NULL unknown
             if col not in tcols:  # TMDB details (genres, rating, length, cast)
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
@@ -323,7 +338,7 @@ class Database:
     def update_title(self, title_id: int, soft: bool = False, **fields: Any) -> None:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked",
                    "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details",
-                   "intro_start", "intro_end", "last_year", "name_manual", "hidden_title", "origin"}
+                   "intro_start", "intro_end", "last_year", "name_manual", "hidden_title", "origin", "collection_id"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -416,6 +431,7 @@ class Database:
 
             rows = self.list_titles()
             fresh = self.new_episodes()
+            mark_sequels(rows)
             for t in rows:
                 t["new_count"], t["new_at"] = fresh.get(t["id"], (0, None))  # search keys and parsed genres, computed once per change
                 t["_key"] = normalize(t["name"] or "")
@@ -456,7 +472,7 @@ class Database:
     def list_titles(self) -> list[dict]:
         return self.q(
             f"""
-            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.poster, t.backdrop, t.overview, t.genres, t.rating,
+            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.collection_id, t.poster, t.backdrop, t.overview, t.genres, t.rating,
                    t.original_name,
                    COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,

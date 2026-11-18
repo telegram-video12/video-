@@ -145,7 +145,7 @@ async function pageHome() {
   // the rows, in Netflix-like order; each one can be hidden with "סידור דף הבית" (remembered on this device)
   const rows = [
     ['cont', 'המשך צפייה', () => cont.length && rowSection('המשך צפייה', '', `<div class="hrow">${cont.map(contCard).join('')}</div>`)],
-    ['new', '✨ פרקים חדשים', () => extra.new.length && rowSection('✨ פרקים חדשים', '', posterRow(extra.new))],
+    ['new', '✨ חדש בשבילך', () => extra.new.length && rowSection('✨ חדש בשבילך', '', posterRow(extra.new))],
     ['watch', '⭐ לצפות בהמשך', () => (extra.watchlist || []).length && rowSection('⭐ לצפות בהמשך', '#/mylist', posterRow(extra.watchlist))],
     ['top', '🏆 טופ 10 שלי', () => (extra.top || []).length && rowSection('🏆 טופ 10 שלי', '', `<div class="hrow top10">${extra.top.map((t, i) => `<div class="top-item"><span class="top-num">${i + 1}</span>${posterCard(t)}</div>`).join('')}</div>`)],
     ['newSeries', '📺 סדרות חדשות', () => newSeries.titles.length && rowSection('📺 סדרות חדשות', '', posterRow(newSeries.titles))],
@@ -791,6 +791,9 @@ document.addEventListener('contextmenu', (e) => {
   contMenu(card);
 });
 
+// a movie that arrived in the last 3 days and you have not watched yet
+const freshMovie = (t) => t.kind === 'movie' && !t.last_watched && t.last_added > Date.now() / 1000 - 3 * 86400;
+
 function posterCard(t) {
   const watchedAll = t.media_count && t.watched_count >= t.media_count;
   const p = t.media_count ? (t.watched_count / t.media_count) * 100 : 0;
@@ -800,8 +803,10 @@ function posterCard(t) {
   // numbers in a right-to-left line get reordered by the browser, so each one is isolated
   const movieSub = [t.year, t.duration ? fmtLen(t.duration) : ''].filter(Boolean).map((x) => `<bdi>${esc(x)}</bdi>`).join(' · ') || 'סרט';
   const corner = t.new_count ? `<span class="badge new corner">${t.new_count === 1 ? 'פרק חדש' : `${t.new_count} פרקים חדשים`}</span>`
+    : t.sequel ? '<span class="badge new corner">✨ סרט המשך</span>'
     : watchedAll ? '<span class="badge ok corner">✓ נצפה</span>'
-    : t.watched_count ? `<span class="badge accent corner">${t.kind === 'series' ? `${t.watched_count}/${t.media_count}` : 'בצפייה'}</span>` : '';
+    : t.watched_count ? `<span class="badge accent corner">${t.kind === 'series' ? `${t.watched_count}/${t.media_count}` : 'בצפייה'}</span>`
+    : freshMovie(t) ? '<span class="badge new corner">חדש</span>' : '';
   return `<a class="poster-card" href="#/title/${t.id}">
     <div class="poster">
       <div class="ph">${esc(t.name)}</div>${img(t.poster)}
