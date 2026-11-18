@@ -48,6 +48,9 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
     if info.kind == "series" and not info.season_explicit and chat.get("default_season"):
         info.season = chat["default_season"]
     norm = normalize(info.name) or info.name
+    # when the site got it: now - except on a group's very first scan, where its old posts are not "new"
+    first_scan = "last_msg_id" in chat and not chat["last_msg_id"]
+    found_at = v.date if first_scan and v.date else time.time()
     title_id = db.get_or_create_title(info.kind, info.name, norm, info.year, soft=True,
                                       origin=media_origin(v.caption, v.file_name, chat))
     new_id = db.add_media(
@@ -66,6 +69,7 @@ def add_video(db: Database, v, chat: dict | str, min_duration: int = 0) -> bool:
         width=v.width,
         height=v.height,
         added_at=v.date,
+        found_at=found_at,
     )
     if new_id is None:
         db.delete_empty_titles()

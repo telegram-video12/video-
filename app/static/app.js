@@ -791,9 +791,6 @@ document.addEventListener('contextmenu', (e) => {
   contMenu(card);
 });
 
-// a movie that arrived in the last 3 days and you have not watched yet
-const freshMovie = (t) => t.kind === 'movie' && !t.last_watched && t.last_added > Date.now() / 1000 - 3 * 86400;
-
 function posterCard(t) {
   const watchedAll = t.media_count && t.watched_count >= t.media_count;
   const p = t.media_count ? (t.watched_count / t.media_count) * 100 : 0;
@@ -805,8 +802,10 @@ function posterCard(t) {
   const corner = t.new_count ? `<span class="badge new corner">${t.new_count === 1 ? 'פרק חדש' : `${t.new_count} פרקים חדשים`}</span>`
     : t.sequel ? '<span class="badge new corner">✨ סרט המשך</span>'
     : watchedAll ? '<span class="badge ok corner">✓ נצפה</span>'
-    : t.watched_count ? `<span class="badge accent corner">${t.kind === 'series' ? `${t.watched_count}/${t.media_count}` : 'בצפייה'}</span>`
-    : freshMovie(t) ? '<span class="badge new corner">חדש</span>' : '';
+    // arrived on the site lately (by the day a scan found it, not by its cinema/TV date)
+    : t.site_new === 'movie' ? '<span class="badge new corner">סרט חדש</span>'
+    : t.site_new === 'episode' ? '<span class="badge new corner">פרק חדש</span>'
+    : t.watched_count ? `<span class="badge accent corner">${t.kind === 'series' ? `${t.watched_count}/${t.media_count}` : 'בצפייה'}</span>` : '';
   return `<a class="poster-card" href="#/title/${t.id}">
     <div class="poster">
       <div class="ph">${esc(t.name)}</div>${img(t.poster)}
@@ -1714,6 +1713,14 @@ async function pageSettings(section) {
         <button class="btn" id="scan-full">סריקה מלאה מההתחלה</button>
       </div>
       <p class="muted" style="font-size:13px;margin-bottom:0">כל עוד האתר פועל, הוא סורק לבד ${st.scan_interval_minutes ? `כל ${st.scan_interval_minutes} דקות` : ''} ובכל הפעלה. סריקה מלאה לא מוחקת עריכות שעשית.</p>
+      <h4 style="margin:18px 0 6px">תווית "חדש"</h4>
+      <p class="muted" style="font-size:13px;margin-top:0">נקבעת לפי היום שבו הסריקה מצאה את הסרט או הפרק באתר, לא לפי תאריך היציאה שלו.</p>
+      <div class="newdays">
+        <label>"סרט חדש" למשך <input type="number" min="1" max="60" id="nd-movie" value="${st.new_days?.movie ?? 30}"> ימים</label>
+        <label>"פרק חדש" למשך <input type="number" min="1" max="60" id="nd-series" value="${st.new_days?.series ?? 7}"> ימים</label>
+        <label>פרק אחרון בעונה למשך <input type="number" min="1" max="60" id="nd-finale" value="${st.new_days?.finale ?? 30}"> ימים</label>
+      </div>
+      <button class="btn" id="nd-save" style="margin-top:8px">שמור</button>
     </div>
     <div class="panel" id="sec-sync"><h3>סנכרון בין מכשירים</h3>
       <p class="muted" style="margin-top:0">מעביר את ההתקדמות בצפייה בין הפלאפון למחשב, כשהם באותו Wi-Fi. בכל סרט ופרק נשמרת הצפייה האחרונה, לא משנה איפה צפית.</p>
@@ -1951,6 +1958,14 @@ async function pageSettings(section) {
   cleanup = () => clearInterval(poll);
   const doScan = async (full) => {
     try { renderScan(await api('/api/scan', {method: 'POST', body: {full}})); startPoll(); } catch (e) { alert(e.message); }
+  };
+  $('#nd-save').onclick = async () => {
+    const v = (id) => Number($('#nd-' + id).value);
+    try {
+      await api('/api/settings', {method: 'POST', body: {new_days: {movie: v('movie'), series: v('series'), finale: v('finale')}}});
+      libraryCache = null;
+      notice('נשמר ✓');
+    } catch (e) { notice(e.message); }
   };
   $('#scan').onclick = () => doScan(false);
   $('#scan-full').onclick = () => confirm('לסרוק מחדש את כל ההודעות בכל הקבוצות? זה יכול לקחת זמן.') && doScan(true);

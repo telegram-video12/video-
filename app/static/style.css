@@ -808,3 +808,8 @@ body.pl-fs { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   #splash *, #splash *::before { animation-duration: .01s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; }
 }
+
+/* Settings → scan: how long the "new" badges stay */
+.newdays { display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.newdays input { width: 64px; margin: 0 6px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line, #24343d);
+  background: var(--card, #0f1c24); color: inherit; font: inherit; text-align: center; }

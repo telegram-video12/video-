@@ -166,6 +166,10 @@ class Database:
             self.conn.execute("ALTER TABLE media ADD COLUMN auto_norm TEXT")
         if "manual" not in mcols:  # set when you fix an episode/movie by hand; automatic regrouping skips it
             self.conn.execute("ALTER TABLE media ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
+        if "found_at" not in mcols:  # when the SITE got this video (a scan found it), not when Telegram posted it
+            self.conn.execute("ALTER TABLE media ADD COLUMN found_at REAL")
+            self.conn.execute("UPDATE media SET found_at = added_at")  # what is already here is not "new"
+        self.conn.execute("CREATE INDEX IF NOT EXISTS media_found ON media(found_at)")
 
     # ---------------------------------------------------------------- helpers
     def q(self, sql: str, args: tuple | list = ()) -> list[dict[str, Any]]:
@@ -432,7 +436,9 @@ class Database:
             rows = self.list_titles()
             fresh = self.new_episodes()
             mark_sequels(rows)
+            eps = self.site_new_episodes(time.time() - 60 * 86400)
             for t in rows:
+                t["ep_new_at"], t["ep_new_season"], t["ep_new_episode"], t["ep_finale"] = eps.get(t["id"], (None,) * 4)
                 t["new_count"], t["new_at"] = fresh.get(t["id"], (0, None))  # search keys and parsed genres, computed once per change
                 t["_key"] = normalize(t["name"] or "")
                 t["_okey"] = normalize(t["original_name"] or "")
@@ -446,6 +452,31 @@ class Database:
                     t["genres"].append("ישראלי")
             self._titles_cache = c = (self.version, self.soft_version, time.time(), rows)
         return c[3]
+
+    def site_new_episodes(self, since: float) -> dict[int, tuple]:
+        """Series that got a NEW episode on the site since `since` (another upload of an episode that was already
+        here does not count): {title_id: (when, season, episode, is it the last episode of its season)}."""
+        rows = self.q(
+            """SELECT m.title_id, m.season, m.episode, MIN(m.found_at) AS f FROM media m
+               JOIN titles t ON t.id = m.title_id AND t.kind = 'series'
+               WHERE m.hidden = 0 AND m.found_at > ? AND m.episode IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM media o WHERE o.title_id = m.title_id AND o.season IS m.season
+                                 AND o.episode = m.episode AND o.hidden = 0 AND o.found_at <= ?)
+               GROUP BY m.title_id, m.season, m.episode""", (since, since))
+        out: dict[int, tuple] = {}
+        for r in rows:  # the newest one of each series
+            cur = out.get(r["title_id"])
+            if not cur or (r["f"], r["season"] or 0, r["episode"]) > (cur[0], cur[1] or 0, cur[2]):
+                out[r["title_id"]] = (r["f"], r["season"], r["episode"], False)
+        if out:  # the season's last episode (known from TMDB once the series was opened): the badge stays longer
+            ids = ",".join(str(i) for i in out)
+            last = {(r["title_id"], r["season"]): r["n"] for r in self.q(
+                f"SELECT title_id, season, MAX(episode) AS n FROM episode_info WHERE title_id IN ({ids}) "
+                "GROUP BY title_id, season")}
+            for tid, (f, se, ep, _) in out.items():
+                n = last.get((tid, se or 1))
+                out[tid] = (f, se, ep, bool(n and ep >= n))
+        return out
 
     def new_episodes(self) -> dict[int, tuple[int, float]]:
         """Series you watch that got episodes AFTER you last watched them (and you have not seen yet):
@@ -478,6 +509,7 @@ class Database:
                    COUNT(DISTINCT m.season) AS season_count,
                    MAX(m.added_at) AS last_added,
                    MAX(m.id) AS last_in,
+                   MIN(m.found_at) AS first_found,
                    MIN(m.id) AS first_media_id,
                    COUNT(DISTINCT CASE WHEN p.completed = 1 THEN {EP_KEY} END) AS watched_count,
                    MAX(CASE WHEN p.completed = 1 OR p.position >= {MIN_STARTED} THEN p.updated_at END) AS last_watched,
@@ -505,10 +537,10 @@ class Database:
             cur = self.conn.execute(
                 """INSERT OR IGNORE INTO media
                    (chat_id, msg_id, title_id, season, episode, file_name, caption, size, mime,
-                    duration, width, height, added_at, auto_norm)
+                    duration, width, height, added_at, auto_norm, found_at)
                    VALUES (:chat_id, :msg_id, :title_id, :season, :episode, :file_name, :caption, :size,
-                           :mime, :duration, :width, :height, :added_at, :auto_norm)""",
-                {"auto_norm": None, **m},
+                           :mime, :duration, :width, :height, :added_at, :auto_norm, :found_at)""",
+                {"auto_norm": None, "found_at": time.time(), **m},
             )
             self.conn.commit()
             if _soft:

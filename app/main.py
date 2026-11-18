@@ -43,6 +43,8 @@ SESSION_DAYS = 365
 PUBLIC_PATHS = {"/login", "/api/login", "/api/setup", "/api/setup-state", "/manifest.json",
                 "/api/sync/exchange"}  # checks its own key (from the shared site password)
 SYNC_EVERY_SECONDS = 5 * 60
+# how many days the "new" badges stay: a movie that arrived, a series' new episode, a season's last episode
+NEW_DAYS_DEFAULT = {"movie": 30, "series": 7, "finale": 30}
 
 
 class ApiError(Exception):
@@ -347,11 +349,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         counts["movie"] = counts["all"] - counts["series"]
         if kind in ("series", "movie"):
             items = [t for t in items if t["kind"] == kind]
-        page = []
-        for t in items[offset:offset + limit]:
-            t = {k: v for k, v in t.items() if not k.startswith("_")}
-            t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
-            page.append(t)
+        page = [card(t) for t in items[offset:offset + limit]]
         out = {"titles": page, "total": len(items), "counts": counts, "offset": offset, "season": want_season}
         if q and offset == 0 and len(raw_q) >= 2 and qp.get("files") == "1":
             # also: videos whose TELEGRAM text has these words but that sit under another name on the site
@@ -374,9 +372,37 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             ]
         return ok(out)
 
-    def card(t: dict) -> dict:
+    _days_cache: dict = {}
+
+    def new_days() -> dict[str, int]:
+        """How long the "סרט חדש" / "פרק חדש" badges stay (days, set in Settings)."""
+        hit = _days_cache.get("v")
+        if hit and time.time() - hit[0] < 5:
+            return hit[1]
+        out = {}
+        for k, default in NEW_DAYS_DEFAULT.items():
+            try:
+                out[k] = max(1, min(60, int(db.get_pref(f"new_days_{k}") or default)))
+            except ValueError:
+                out[k] = default
+        _days_cache["v"] = (time.time(), out)
+        return out
+
+    def site_new(t: dict, days: dict[str, int], now: float) -> str | None:
+        """"movie": a movie that ARRIVED on the site lately (not by its cinema date); "episode": a series that
+        got a new episode lately (the last episode of a season keeps the badge longer)."""
+        if t["kind"] == "movie":
+            return "movie" if (t.get("first_found") or 0) > now - days["movie"] * 86400 else None
+        if t.get("ep_new_at"):
+            limit = days["finale"] if t.get("ep_finale") else days["series"]
+            if t["ep_new_at"] > now - limit * 86400:
+                return "episode"
+        return None
+
+    def card(t: dict, days: dict | None = None) -> dict:
         t = {k: v for k, v in t.items() if not k.startswith("_")}
         t["poster"] = t["poster"] or thumb_url(t["first_media_id"])
+        t["site_new"] = site_new(t, days or new_days(), time.time())
         return t
 
     async def home_rows(request: Request):
@@ -932,6 +958,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "scan": scanner.status,
             "chats": db.chats(),
             "scan_interval_minutes": settings.scan_interval_minutes,
+            "new_days": new_days(),
             "strip_phrases": db.strip_phrases(),
             "duplicates": len(possible_duplicates(db)),
             "sync": {
@@ -953,6 +980,15 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if key:  # look up titles that were added before the key existed
                 db.x("UPDATE titles SET tmdb_checked = 0 WHERE tmdb_id IS NULL")
                 scanner.start_tmdb()
+        if isinstance(payload.get("new_days"), dict):
+            for k in NEW_DAYS_DEFAULT:
+                v = payload["new_days"].get(k)
+                if v is not None:
+                    try:
+                        db.set_pref(f"new_days_{k}", str(max(1, min(60, int(v)))))
+                        _days_cache.clear()
+                    except (TypeError, ValueError):
+                        raise ApiError(400, "מספר הימים צריך להיות מספר בין 1 ל-60") from None
         if "sync_peer" in payload:
             db.set_pref("sync_peer", peer_url(str(payload["sync_peer"] or "")))
         if "strip_phrases" in payload:
