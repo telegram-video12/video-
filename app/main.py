@@ -138,7 +138,7 @@ class AuthMiddleware:
         # you changed something (an edit, "watched", a list): the next pages should show it.
         # Saving the playing position every few seconds does not count.
         if (self.on_change and scope.get("method") not in ("GET", "HEAD") and path.startswith("/api/")
-                and not path.startswith(("/api/progress", "/api/sync", "/api/logout", "/api/scan", "/api/tv/"))):
+                and not path.startswith(("/api/progress", "/api/sync", "/api/logout", "/api/scan", "/api/tv/", "/api/remote/"))):
             self.on_change()
 
 
@@ -1016,6 +1016,52 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             tv["player"] = None
         return ok({**tv_info(), "position": p.position})
 
+    # ------------------------------------------- the phone as the TV's remote
+    # The TV's browser keeps the remote's keys for its mouse pointer, so the site on the TV listens here instead,
+    # and the phone's "remote" page sends the presses.
+    remote_screens: set = set()
+    REMOTE_CMDS = {"up", "down", "left", "right", "ok", "back", "home", "pp", "ff", "rw"}
+
+    async def remote_events(request: Request):
+        """The site on the TV: a live stream of the presses (Server-Sent Events)."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=50)
+        remote_screens.add(q)
+
+        async def gen():
+            try:
+                yield "retry: 2000\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        msg = await asyncio.wait_for(q.get(), 15)
+                        yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    except asyncio.TimeoutError:
+                        yield ": still here\n\n"  # keeps the connection open
+            finally:
+                remote_screens.discard(q)
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    async def remote_send(request: Request):
+        data = await body(request)
+        cmd = str(data.get("cmd") or "")
+        if cmd == "search":
+            msg = {"cmd": "search", "text": str(data.get("text") or "")[:100]}
+        elif cmd in REMOTE_CMDS:
+            msg = {"cmd": cmd}
+        else:
+            raise ApiError(400, "לחיצה לא מוכרת")
+        for q in list(remote_screens):
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                pass
+        return ok({"screens": len(remote_screens)})
+
+    async def remote_status(request: Request):
+        return ok({"screens": len(remote_screens)})
+
     async def media_check(request: Request):
         """The player could not load a video: is it gone from Telegram? Then find another upload of it that works."""
         media_id = request.path_params["id"]
@@ -1496,6 +1542,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/progress/{id:int}", save_progress, methods=["POST"]),
         R("/api/watched/{id:int}", set_watched, methods=["POST"]),
         R("/api/stream/{id:int}", stream, methods=["GET", "HEAD"]),
+        R("/api/remote/events", remote_events), R("/api/remote/send", remote_send, methods=["POST"]),
+        R("/api/remote/status", remote_status),
         R("/api/tv/devices", tv_devices), R("/api/tv/play", tv_play, methods=["POST"]),
         R("/api/tv/control", tv_control, methods=["POST"]), R("/api/tv/status", tv_status), R("/api/thumb/{id:int}", thumb),
         R("/api/status", status), R("/api/settings", save_settings, methods=["POST"]),

@@ -132,3 +132,59 @@ def test_tv_browser_player_gets_a_video_key(client):
     client.cookies.clear()  # the TV's own player sends no login
     assert client.get(f"/api/stream/{mid}").status_code == 401
     assert client.get(f"/api/stream/{mid}?t={key}", headers={"Range": "bytes=0-9"}).status_code == 206
+
+
+def test_phone_remote_reaches_the_tv(tmp_path, monkeypatch):
+    """A real server (the test client cannot hold a live stream open)."""
+    import json as _json
+    import socket
+    import time as _time
+
+    import httpx
+    import uvicorn
+
+    from app.config import Settings
+    from app.main import create_app
+    from test_api import FakeTG
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SITE_PASSWORD", "secret")
+    monkeypatch.setenv("SCAN_INTERVAL_MINUTES", "0")
+    monkeypatch.delenv("LOCAL_ONLY", raising=False)
+    app = create_app(Settings(), tg=FakeTG())
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            try:
+                httpx.get(base + "/login", timeout=1)
+                break
+            except httpx.HTTPError:
+                _time.sleep(0.05)
+        phone = httpx.Client(base_url=base, timeout=5)
+        assert phone.post("/api/login", json={"password": "secret"}).status_code == 200
+        assert phone.post("/api/remote/send", json={"cmd": "nope"}).status_code == 400
+        assert phone.post("/api/remote/send", json={"cmd": "up"}).json()["screens"] == 0
+
+        def press():
+            for _ in range(100):
+                if phone.get("/api/remote/status").json()["screens"]:
+                    break
+                _time.sleep(0.05)
+            phone.post("/api/remote/send", json={"cmd": "ok"})
+            phone.post("/api/remote/send", json={"cmd": "search", "text": "פאודה"})
+        threading.Thread(target=press, daemon=True).start()
+        got = []
+        with httpx.Client(base_url=base, cookies=phone.cookies, timeout=10) as tv, tv.stream("GET", "/api/remote/events") as r:
+            for line in r.iter_lines():
+                if line.startswith("data: "):
+                    got.append(_json.loads(line[6:]))
+                if len(got) == 2:
+                    break
+        assert got == [{"cmd": "ok"}, {"cmd": "search", "text": "פאודה"}]
+    finally:
+        server.should_exit = True

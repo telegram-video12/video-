@@ -82,6 +82,7 @@ async function route() {
   try {
     if (first === 'title') await pageTitle(+parts[1]);
     else if (first === 'person') await pagePerson(decodeURIComponent(parts[1] || ''));
+    else if (first === 'remote') await pageRemote();
     else if (first === 'watch') await pageWatch(+parts[1]);
     else if (first === 'more' || first === 'settings') await pageSettings(parts[1]);
     else if (first === 'series') await pageList('series', st);
@@ -116,6 +117,57 @@ const IS_TV = (() => {
   return /SMART-TV|SmartTV|Tizen|Web0S|webOS|HbbTV|NetCast|BRAVIA|Android TV|AFTS|AFTM/i.test(navigator.userAgent);
 })();
 if (IS_TV) document.documentElement.classList.add('tv');
+
+// ---- the phone as the remote: the site on the TV gets the presses from the server (the TV's browser keeps
+// its own remote's keys for the mouse pointer)
+function remoteKey(key) {
+  (document.activeElement || document).dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
+}
+function remoteCmd(msg) {
+  const cmd = msg.cmd;
+  const arrows = {up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight'};
+  if (arrows[cmd]) { remoteKey(arrows[cmd]); return; }
+  if (cmd === 'back') { remoteKey('GoBack'); return; }
+  if (cmd === 'home') { location.hash = '#/'; return; }
+  if (cmd === 'pp') { remoteKey('MediaPlayPause'); return; }
+  if (cmd === 'ff') { remoteKey('MediaFastForward'); return; }
+  if (cmd === 'rw') { remoteKey('MediaRewind'); return; }
+  if (cmd === 'ok') {
+    const el = document.activeElement;
+    if (!el || el === document.body || el.tagName === 'VIDEO') { remoteKey('Enter'); return; }  // the player: play / pause
+    if (el.matches('input[type=search], input[type=text]')) { el.focus(); return; }
+    el.click();
+    return;
+  }
+  if (cmd === 'search') {
+    const go = () => {
+      const input = document.getElementById('q');
+      if (!input) return false;
+      input.value = msg.text;
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      input.blur();  // no on-screen keyboard on the TV: the remote moves to the results
+      setTimeout(() => { const r = [...$app.querySelectorAll('#results .poster-card')].find(tvVisible); if (r) tvFocus(r, true); }, 900);
+      return true;
+    };
+    if (!go()) { location.hash = '#/search'; setTimeout(go, 600); }
+  }
+}
+(() => {
+  if (!IS_TV || !window.EventSource) return;
+  let es = null, said = false;
+  const open = () => {
+    es = new EventSource('/api/remote/events');
+    es.onmessage = (e) => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch (_) { return; }
+      if (!said) { said = true; notice('📱 השלט בפלאפון מחובר'); }
+      if (!document.querySelector(':focus') && msg.cmd !== 'search' && !location.hash.startsWith('#/watch/')) tvAutoFocus(true);
+      remoteCmd(msg);
+    };
+    es.onerror = () => {};  // reconnects by itself
+  };
+  open();
+})();
 
 // ---- a check for the TV: open the site with ?keys=1 to see which remote keys reach the page
 (() => {
@@ -1091,6 +1143,65 @@ function trailerSheet(name, tr) {
   });
   document.body.appendChild(el);
   requestAnimationFrame(() => el.classList.add('open'));
+}
+
+// the phone as the TV's remote
+async function pageRemote() {
+  $app.innerHTML = `<a class="backlink" href="javascript:history.back()">→ חזרה</a>
+    <div class="remote">
+      <h1>📱 שלט לטלוויזיה</h1>
+      <div class="rm-status muted" id="rm-status">בודק חיבור...</div>
+      <div class="rm-pad">
+        <button data-c="up" class="rm-up" aria-label="למעלה">▲</button>
+        <button data-c="left" class="rm-left" aria-label="שמאלה">◀</button>
+        <button data-c="ok" class="rm-ok">OK</button>
+        <button data-c="right" class="rm-right" aria-label="ימינה">▶</button>
+        <button data-c="down" class="rm-down" aria-label="למטה">▼</button>
+      </div>
+      <div class="rm-row">
+        <button data-c="back" class="rm-wide">↩ חזור</button>
+        <button data-c="home" class="rm-wide">⌂ בית</button>
+      </div>
+      <div class="rm-row">
+        <button data-c="rw" aria-label="אחורה">⏪</button>
+        <button data-c="pp" class="rm-pp" aria-label="נגן / השהה">⏯</button>
+        <button data-c="ff" aria-label="קדימה">⏩</button>
+      </div>
+      <form class="rm-search" id="rm-search">
+        <input id="rm-q" type="search" placeholder="🔍 חיפוש בטלוויזיה..." autocomplete="off" enterkeyhint="search">
+        <button class="btn primary">חפש</button>
+      </form>
+      <p class="muted" style="font-size:13px;text-align:center">⏪ ⏩ קופצים 30 שניות בזמן סרט. בטלוויזיה האתר צריך להיות פתוח בדפדפן.</p>
+    </div>`;
+  const status = $app.querySelector('#rm-status');
+  const send = async (body) => {
+    try {
+      const r = await api('/api/remote/send', {method: 'POST', body});
+      status.textContent = r.screens ? '✓ מחובר לטלוויזיה' : '⚠ הטלוויזיה לא מחוברת: פתח בה את האתר';
+      status.classList.toggle('ok', !!r.screens);
+    } catch (e) { status.textContent = e.message; }
+  };
+  $app.querySelector('.remote').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-c]');
+    if (!b) return;
+    if (navigator.vibrate) navigator.vibrate(12);
+    send({cmd: b.dataset.c});
+  });
+  $app.querySelector('#rm-search').onsubmit = (e) => {
+    e.preventDefault();
+    const q = $app.querySelector('#rm-q');
+    send({cmd: 'search', text: q.value.trim()});
+    q.blur();
+  };
+  const check = async () => {
+    const r = await api('/api/remote/status').catch(() => null);
+    if (!r) return;
+    status.textContent = r.screens ? '✓ מחובר לטלוויזיה' : '⚠ הטלוויזיה לא מחוברת: פתח בה את האתר';
+    status.classList.toggle('ok', !!r.screens);
+  };
+  check();
+  const t = setInterval(check, 5000);
+  cleanup = () => clearInterval(t);
 }
 
 // an actor: everything of theirs in your library
@@ -2126,6 +2237,8 @@ async function pageSettings(section) {
         <li>הכנס את הסיסמה של האתר. מומלץ לשמור את הכתובת במועדפים של הטלוויזיה.</li>
         <li>המכשיר הזה (${st.lan_needed ? 'הפלאפון' : 'המחשב'}) צריך להישאר דלוק עם האתר פועל כל זמן הצפייה.</li>
       </ol>
+      <a class="btn primary wide" href="#/remote">📱 פתח את השלט</a>
+      <p class="muted" style="font-size:13px">הדפדפן של הטלוויזיה משתמש בחיצים של השלט שלה לחץ עכבר, אז את האתר בטלוויזיה מפעילים מהפלאפון: חיצים, OK, חזור, ⏯ וחיפוש.</p>
     </div>
     <div class="panel" id="sec-sync"><h3>סנכרון בין מכשירים</h3>
       <p class="muted" style="margin-top:0">מעביר את ההתקדמות בצפייה בין הפלאפון למחשב, כשהם באותו Wi-Fi. בכל סרט ופרק נשמרת הצפייה האחרונה, לא משנה איפה צפית.</p>

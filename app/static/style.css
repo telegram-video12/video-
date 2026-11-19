@@ -876,3 +876,24 @@ html.tv .rsec-head a { display: none; }  /* row headers: the top menu already le
 
 #keysdebug { position: fixed; top: 8px; left: 8px; z-index: 9999; max-width: 70vw; background: #000d; color: #fff;
   border: 2px solid var(--gold); border-radius: 10px; padding: 10px 14px; font-size: 16px; line-height: 1.6; }
+
+/* the phone as the TV's remote */
+.remote { max-width: 420px; margin: 0 auto; text-align: center; user-select: none; -webkit-user-select: none; }
+.remote h1 { font-size: 22px; margin: 6px 0; }
+.rm-status { margin-bottom: 18px; }
+.rm-status.ok { color: var(--gold); }
+.remote button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; cursor: pointer; font: inherit; color: inherit;
+  border: 1px solid var(--line); background: var(--s2); }
+.remote button:active { transform: scale(.94); background: rgba(22, 217, 197, .25); }
+.rm-pad { display: grid; grid-template-columns: repeat(3, 84px); grid-template-rows: repeat(3, 84px); gap: 10px;
+  justify-content: center; direction: ltr; margin: 0 auto 18px; }
+.rm-pad button { border-radius: 22px; font-size: 26px; }
+.rm-up { grid-column: 2; grid-row: 1; } .rm-left { grid-column: 1; grid-row: 2; } .rm-ok { grid-column: 2; grid-row: 2; }
+.rm-right { grid-column: 3; grid-row: 2; } .rm-down { grid-column: 2; grid-row: 3; }
+.rm-pad .rm-ok { border-radius: 50%; background: var(--grad); color: var(--ink); font-weight: 800; font-size: 22px; border: 0; }
+.rm-row { display: flex; gap: 10px; justify-content: center; margin-bottom: 12px; direction: ltr; }
+.rm-row button { width: 84px; height: 60px; border-radius: 16px; font-size: 22px; }
+.rm-row .rm-wide { width: 130px; font-size: 17px; }
+.rm-row .rm-pp { background: var(--grad); color: var(--ink); border: 0; }
+.rm-search { display: flex; gap: 8px; margin: 18px 0 10px; }
+.rm-search input { flex: 1; min-width: 0; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--s2); color: inherit; font: inherit; }
