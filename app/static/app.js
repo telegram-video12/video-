@@ -62,7 +62,7 @@ async function route() {
   const prev = route.current;
   route.cameFrom = prev || null;
   if (prev && pageState[prev]) pageState[prev].scrollY = window.scrollY;
-  if (IS_TV && prev && pageState[prev]) pageState[prev].focus = document.activeElement?.getAttribute('href') || null;
+  if (IS_TV && prev && pageState[prev]) pageState[prev].focus = tvCur()?.getAttribute('href') || null;
   if (cleanup) { try { cleanup(); } catch (_) {} cleanup = null; }
   closeAllSheets();
   if (!(location.hash || '').startsWith(`#/title/${editTitleId}`)) editMode = false;  // edit mode ends when you leave
@@ -93,7 +93,7 @@ async function route() {
     if (st.scrollY) requestAnimationFrame(() => window.scrollTo(0, st.scrollY));
     if (IS_TV) setTimeout(() => {  // the remote needs something selected: where you were on this page, or its main thing
       const back = st.focus && [...$app.querySelectorAll(`a[href="${CSS.escape(st.focus)}"]`)].find(tvVisible);
-      if (back) back.focus({preventScroll: true}); else tvAutoFocus(false);
+      if (back) tvFocus(back, true); else tvAutoFocus(false);
     }, 80);
     // a soft fade-and-rise for the new page (not when only the episode changes inside the player)
     if (!(first === 'watch' && prev && prev.startsWith('/watch/'))) {
@@ -121,7 +121,7 @@ if (IS_TV) document.documentElement.classList.add('tv');
 // ---- the phone as the remote: the site on the TV gets the presses from the server (the TV's browser keeps
 // its own remote's keys for the mouse pointer)
 function remoteKey(key) {
-  (document.activeElement || document).dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
+  (tvCur() || document.body).dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
 }
 function remoteCmd(msg) {
   const cmd = msg.cmd;
@@ -133,8 +133,8 @@ function remoteCmd(msg) {
   if (cmd === 'ff') { remoteKey('MediaFastForward'); return; }
   if (cmd === 'rw') { remoteKey('MediaRewind'); return; }
   if (cmd === 'ok') {
-    const el = document.activeElement;
-    if (!el || el === document.body || el.tagName === 'VIDEO') { remoteKey('Enter'); return; }  // the player: play / pause
+    const el = tvCur();
+    if (!el || el.tagName === 'VIDEO') { remoteKey('Enter'); return; }  // the player: play / pause
     if (el.matches('input[type=search], input[type=text]')) { el.focus(); return; }
     el.click();
     return;
@@ -161,7 +161,7 @@ function remoteCmd(msg) {
       let msg;
       try { msg = JSON.parse(e.data); } catch (_) { return; }
       if (!said) { said = true; notice('📱 השלט בפלאפון מחובר'); }
-      if (!document.querySelector(':focus') && msg.cmd !== 'search' && !location.hash.startsWith('#/watch/')) tvAutoFocus(true);
+      if (!tvCur() && msg.cmd !== 'search' && !location.hash.startsWith('#/watch/') && !['up', 'down', 'left', 'right'].includes(msg.cmd)) tvAutoFocus(true);
       remoteCmd(msg);
     };
     es.onerror = () => {};  // reconnects by itself
@@ -173,10 +173,8 @@ function remoteCmd(msg) {
 (() => {
   let on = false;
   try {
-    const q = new URLSearchParams(location.search).get('keys');
-    if (q === '1') localStorage.setItem('keysdebug', '1');
-    if (q === '0') localStorage.removeItem('keysdebug');
-    on = localStorage.getItem('keysdebug') === '1';
+    localStorage.removeItem('keysdebug');  // older versions remembered it
+    on = new URLSearchParams(location.search).get('keys') === '1';
   } catch (_) {}
   if (!on) return;
   const box = document.createElement('div');
@@ -186,9 +184,11 @@ function remoteCmd(msg) {
   const draw = () => {
     box.innerHTML = `<b>בדיקת שלט</b> · מצב טלוויזיה: <b>${IS_TV ? 'כן' : 'לא'}</b> · תנועות עכבר: ${moves}<br>
       <span dir="ltr">${esc(navigator.userAgent).slice(0, 140)}</span><br>
-      מקשים שהגיעו: <span dir="ltr">${seen.map(esc).join(' , ') || '(עוד לא הגיע כלום)'}</span>`;
+      מקשים שהגיעו: <span dir="ltr">${seen.map(esc).join(' , ') || '(עוד לא הגיע כלום)'}</span><br>
+      נבחר: <span dir="ltr">${(() => { const c = typeof tvCur === 'function' && tvCur(); return c ? esc(c.tagName + '.' + c.className.split(' ')[0] + ' ' + (c.textContent || '').trim().slice(0, 30)) : '(כלום)'; })()}</span>`;
   };
-  window.addEventListener('keydown', (e) => { seen.unshift(`${e.key || '?'}(${e.keyCode})`); seen.length = Math.min(seen.length, 8); draw(); }, true);
+  window.addEventListener('keydown', (e) => { seen.unshift(`${e.key || '?'}(${e.keyCode})`); seen.length = Math.min(seen.length, 8); setTimeout(draw, 50); }, true);
+  window.addEventListener('error', (e) => { seen.unshift('ERROR: ' + e.message); draw(); });
   window.addEventListener('mousemove', () => { moves++; if (moves % 10 === 1) draw(); }, true);
   draw();
   document.addEventListener('DOMContentLoaded', () => document.body.appendChild(box));
@@ -203,6 +203,19 @@ function tvVisible(el) {
   const cs = getComputedStyle(el);
   return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.pointerEvents !== 'none';
 }
+// The selection is kept by the site itself (the TV's browser may keep its own focus on its address bar,
+// and then the page's focus does not move): tvSel + the "tv-sel" frame.
+let tvSel = null;
+function tvCur() {
+  if (tvSel && document.contains(tvSel) && tvVisible(tvSel)) return tvSel;
+  const a = document.activeElement;
+  return a && a !== document.body && tvVisible(a) ? a : null;
+}
+function tvBlur() {
+  if (tvSel) tvSel.classList.remove('tv-sel');
+  tvSel = null;
+  if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+}
 function tvScope() {  // an open sheet keeps the focus inside it
   const sheets = [...document.querySelectorAll('.sheet-wrap')];
   return sheets[sheets.length - 1] || (location.hash.startsWith('#/watch/') ? document.querySelector('.player-wrap') : null) || document.body;
@@ -210,8 +223,15 @@ function tvScope() {  // an open sheet keeps the focus inside it
 function tvMove(dir) {
   const scope = tvScope();
   const all = [...scope.querySelectorAll(FOCUSABLE)].filter(tvVisible);
-  const cur = document.activeElement;
-  if (!cur || cur === document.body || !scope.contains(cur) || !tvVisible(cur)) { tvAutoFocus(true); return; }
+  const cur = tvCur();
+  if (!cur || !scope.contains(cur)) { tvAutoFocus(true); return; }
+  // the slideshow at the top of the home page: left / right turn it (the card stays selected)
+  if ((dir === 'left' || dir === 'right') && cur.classList.contains('cf-card')) {
+    const root = cur.closest('.cf');
+    root?.querySelector(dir === 'left' ? '.cf-arrow.next' : '.cf-arrow.prev')?.click();
+    setTimeout(() => { const on = root?.querySelector('.cf-card.on'); if (on) tvFocus(on, false); }, 60);
+    return;
+  }
   const a = cur.getBoundingClientRect();
   const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
   if (dir === 'up' || dir === 'down') {  // the nearest row above / below first, then the closest item in it
@@ -251,20 +271,23 @@ function tvMove(dir) {
   if (best) tvFocus(best, dir === 'up' || dir === 'down');
 }
 function tvFocus(el, vertical) {
-  el.focus({preventScroll: true});
+  if (tvSel && tvSel !== el) tvSel.classList.remove('tv-sel');
+  tvSel = el;
+  el.classList.add('tv-sel');
+  try { el.focus({preventScroll: true}); } catch (_) {}
   el.scrollIntoView({block: vertical ? 'center' : 'nearest', inline: 'nearest', behavior: 'smooth'});
 }
 function tvAutoFocus(force) {
   if (!IS_TV) return;
   // the player: nothing selected, so left/right jump 10 s and OK pauses ("up" shows the buttons)
   if (location.hash.startsWith('#/watch/') && !document.querySelector('.sheet-wrap')) {
-    if (!force) { document.activeElement?.blur?.(); return; }
+    if (!force) { tvBlur(); return; }
     const pb = document.getElementById('playbtn');
-    if (pb) { pb.focus(); return; }
+    if (pb) { tvFocus(pb, false); return; }
   }
   const scope = tvScope();
-  const cur = document.activeElement;
-  if (!force && cur && cur !== document.body && scope.contains(cur) && tvVisible(cur)) return;
+  const cur = tvCur();
+  if (!force && cur && scope.contains(cur)) return;
   let pick = null;
   if (scope === document.body) {  // the page's main thing first: the slideshow, "watch" button, the first poster
     for (const sel of ['.cf-card.on', '.cf-card', '.title-side .btn.primary', '.hero .btn.primary', '.poster-card', '.chip']) {
@@ -300,19 +323,20 @@ document.addEventListener('keydown', (e) => {
   if (!dir) return;
   if (typing && (dir === 'left' || dir === 'right')) return;  // moving inside the text
   if (inPlayer) {
-    const onControl = document.activeElement && document.activeElement.closest('.pl-bar, .pl-top, .tv-panel, .pl-pill');
+    const sel = tvCur();
+    const onControl = sel && sel.closest('.pl-bar, .pl-top, .tv-panel, .pl-pill');
     if (!onControl) {  // watching: left/right jump 10 s (the player does it); up shows the buttons
       if (dir === 'up') {
         e.preventDefault(); e.stopImmediatePropagation();
         document.querySelector('.player-wrap')?.dispatchEvent(new MouseEvent('mousemove', {bubbles: true}));
         const pb = document.getElementById('playbtn');
-        if (pb) pb.focus();
+        if (pb) tvFocus(pb, false);
       } else if (dir === 'down') { e.preventDefault(); e.stopImmediatePropagation(); }
       return;
     }
-    if (dir === 'down' && document.activeElement.closest('.pl-bar')) {  // below the buttons: back to the picture
+    if (dir === 'down' && sel.closest('.pl-bar')) {  // below the buttons: back to the picture
       e.preventDefault(); e.stopImmediatePropagation();
-      document.activeElement.blur();
+      tvBlur();
       return;
     }
   }
@@ -517,7 +541,7 @@ function startCarousel(root) {
   root.querySelector('.cf-arrow.next').onclick = () => { stop(); go(cur + 1); };
   root.querySelector('.cf-arrow.prev').onclick = () => { stop(); go(cur - 1); };
   draw();
-  auto = setInterval(() => { if (!document.hidden) go(cur + 1); }, 6000);
+  if (!IS_TV) auto = setInterval(() => { if (!document.hidden) go(cur + 1); }, 6000);  // on the TV the remote turns it
   return () => clearInterval(auto);
 }
 

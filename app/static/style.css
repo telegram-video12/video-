@@ -897,3 +897,9 @@ html.tv .rsec-head a { display: none; }  /* row headers: the top menu already le
 .rm-row .rm-pp { background: var(--grad); color: var(--ink); border: 0; }
 .rm-search { display: flex; gap: 8px; margin: 18px 0 10px; }
 .rm-search input { flex: 1; min-width: 0; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--s2); color: inherit; font: inherit; }
+
+/* the remote's selection (kept by the site, so it shows even when the TV's browser keeps its own focus) */
+html.tv .tv-sel:not(.poster-card):not(.cf-card) { outline: 4px solid var(--gold) !important; outline-offset: 3px; border-radius: 10px; }
+html.tv .poster-card.tv-sel { outline: none; transform: scale(1.07); z-index: 2; position: relative; }
+html.tv .poster-card.tv-sel .poster { box-shadow: 0 0 0 4px var(--gold), 0 12px 30px rgba(0,0,0,.6); }
+html.tv .cf-card.tv-sel { box-shadow: 0 0 0 5px var(--gold) !important; }
