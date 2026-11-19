@@ -308,6 +308,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         offset = max(0, int(qp.get("offset", 0) or 0))
         limit = min(200, max(1, int(qp.get("limit", 60) or 60)))
         items = db.library_titles()
+        # how many series / movies the whole site has (before any search or filter)
+        site_counts = {"series": sum(1 for t in items if t["kind"] == "series")}
+        site_counts["movie"] = len(items) - site_counts["series"]
         if q:  # Hebrew name or the original (TMDB) name: "Spider" finds "ספיידרמן"
             sk = skeleton(q)
             found = [t for t in items if q in t["_key"] or (t["_okey"] and q in t["_okey"]) or (len(sk) >= 3 and sk in t["_skel"])]
@@ -355,7 +358,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if kind in ("series", "movie"):
             items = [t for t in items if t["kind"] == kind]
         page = [card(t) for t in items[offset:offset + limit]]
-        out = {"titles": page, "total": len(items), "counts": counts, "offset": offset, "season": want_season}
+        out = {"titles": page, "total": len(items), "counts": counts, "site_counts": site_counts, "offset": offset, "season": want_season}
         if q and offset == 0 and len(raw_q) >= 2 and qp.get("files") == "1":
             # also: videos whose TELEGRAM text has these words but that sit under another name on the site
             shown = {t["id"] for t in items}

@@ -111,3 +111,13 @@ def test_unreleased_movie_is_not_a_sequel():
              "avail_at": time.time() + 86400 * 30}]
     mark_sequels(rows)
     assert rows[1]["sequel"] == 0 and rows[2]["sequel"] == 0
+
+
+def test_site_counts_ignore_filters(client):
+    from test_api import login, scan
+
+    login(client)
+    scan(client)
+    full = client.get("/api/library?kind=movie").json()["site_counts"]
+    filtered = client.get("/api/library?kind=movie&genres=nothing").json()
+    assert filtered["total"] == 0 and filtered["site_counts"] == full and full["movie"] >= 1

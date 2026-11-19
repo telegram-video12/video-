@@ -501,7 +501,9 @@ async function pageList(kind, st) {
     } else {
       body = emptyLibrary();
     }
-    $app.innerHTML = shell(data.total || filtered ? `${n(data.total)} ${title}${filtered ? ' בסינון הזה' : ' בספרייה'}` : '', body);
+    // always the site's total; with a filter on, also how many match it
+    const all = data.site_counts?.[kind] ?? data.total;
+    $app.innerHTML = shell(all ? `${n(all)} ${title} באתר${filtered ? ` · ${n(data.total)} בסינון הזה` : ''}` : '', body);
     bind();
     st.loaded = titles.length;
     if (cleanup) cleanup();
