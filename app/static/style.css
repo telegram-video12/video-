@@ -873,3 +873,6 @@ html.tv .pl-btn:focus { background: rgba(22, 217, 197, .25); }
 html.tv body { zoom: 1.25; }  /* read from the couch */
 html.tv .hrow { padding-block: 14px; }
 html.tv .rsec-head a { display: none; }  /* row headers: the top menu already leads to the full lists */
+
+#keysdebug { position: fixed; top: 8px; left: 8px; z-index: 9999; max-width: 70vw; background: #000d; color: #fff;
+  border: 2px solid var(--gold); border-radius: 10px; padding: 10px 14px; font-size: 16px; line-height: 1.6; }

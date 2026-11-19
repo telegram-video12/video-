@@ -117,6 +117,32 @@ const IS_TV = (() => {
 })();
 if (IS_TV) document.documentElement.classList.add('tv');
 
+// ---- a check for the TV: open the site with ?keys=1 to see which remote keys reach the page
+(() => {
+  let on = false;
+  try {
+    const q = new URLSearchParams(location.search).get('keys');
+    if (q === '1') localStorage.setItem('keysdebug', '1');
+    if (q === '0') localStorage.removeItem('keysdebug');
+    on = localStorage.getItem('keysdebug') === '1';
+  } catch (_) {}
+  if (!on) return;
+  const box = document.createElement('div');
+  box.id = 'keysdebug';
+  const seen = [];
+  let moves = 0;
+  const draw = () => {
+    box.innerHTML = `<b>בדיקת שלט</b> · מצב טלוויזיה: <b>${IS_TV ? 'כן' : 'לא'}</b> · תנועות עכבר: ${moves}<br>
+      <span dir="ltr">${esc(navigator.userAgent).slice(0, 140)}</span><br>
+      מקשים שהגיעו: <span dir="ltr">${seen.map(esc).join(' , ') || '(עוד לא הגיע כלום)'}</span>`;
+  };
+  window.addEventListener('keydown', (e) => { seen.unshift(`${e.key || '?'}(${e.keyCode})`); seen.length = Math.min(seen.length, 8); draw(); }, true);
+  window.addEventListener('mousemove', () => { moves++; if (moves % 10 === 1) draw(); }, true);
+  draw();
+  document.addEventListener('DOMContentLoaded', () => document.body.appendChild(box));
+  if (document.body) document.body.appendChild(box);
+})();
+
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type=hidden]), select, [tabindex]:not([tabindex="-1"])';
 function tvVisible(el) {
   if (el.closest('[hidden]')) return false;
