@@ -32,8 +32,12 @@ if __name__ == "__main__":
         os.environ["LOCAL_ONLY"] = "1"
     url = f"http://localhost:{port}"
     print(f"\n  *** The site is running! Open in the browser: {url}")
-    if os.getenv("HOST") == "0.0.0.0" and lan_address():
-        print(f"  From your phone (same Wi-Fi): http://{lan_address()}:{port}")
+    if lan_address():
+        if os.getenv("LOCAL_ONLY") == "1":
+            print(f"  TV address (same Wi-Fi): http://{lan_address()}:{port}")
+            print("  (first allow it on the site: Settings > TV viewing)")
+        else:
+            print(f"  From your phone or TV (same Wi-Fi): http://{lan_address()}:{port}")
     print("  To stop: CTRL+C (or close this window)\n")
     if os.getenv("NO_BROWSER") != "1":
         if shutil.which("termux-open-url"):
