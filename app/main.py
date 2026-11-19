@@ -26,6 +26,8 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import crypto_boost
+from . import dlna
+from .dlna import DLNA_FEATURES
 from .config import Settings
 from .db import Database, quality_of
 from .library import possible_duplicates
@@ -122,7 +124,7 @@ class AuthMiddleware:
         # you changed something (an edit, "watched", a list): the next pages should show it.
         # Saving the playing position every few seconds does not count.
         if (self.on_change and scope.get("method") not in ("GET", "HEAD") and path.startswith("/api/")
-                and not path.startswith(("/api/progress", "/api/sync", "/api/logout", "/api/scan"))):
+                and not path.startswith(("/api/progress", "/api/sync", "/api/logout", "/api/scan", "/api/tv/"))):
             self.on_change()
 
 
@@ -887,11 +889,115 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
             "Cache-Control": "private, max-age=3600",
+            # smart TVs (DLNA) want to hear that this is a stream they may jump around in
+            "transferMode.dlna.org": "Streaming",
+            "contentFeatures.dlna.org": DLNA_FEATURES,
         }
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        if request.method == "HEAD":  # a TV checking the video before playing it
+            return Response(status_code=status, headers=headers, media_type=m["mime"] or "video/mp4")
         return StreamingResponse(tg.stream(m["chat_id"], m["msg_id"], start, end), status_code=status,
                                  headers=headers, media_type=m["mime"] or "video/mp4")
+
+    # ------------------------------------------------- play on a smart TV (DLNA)
+    tv: dict = {"player": None, "task": None, "devices": None}
+
+    async def tv_devices(request: Request):
+        """The TVs on the home network (remembered 2 minutes; ?fresh=1 searches again)."""
+        hit = tv["devices"]
+        if not hit or time.time() - hit[0] > 120 or request.query_params.get("fresh") == "1":
+            tv["devices"] = hit = (time.time(), await dlna.discover())
+        return ok({"devices": [{"id": d["id"], "name": d["name"]} for d in hit[1]], "lan": bool(lan_ip())})
+
+    async def tv_watch(player: dlna.TVPlayer) -> None:
+        """While the TV plays: save your progress, like watching on the phone."""
+        fails, stopped = 0, 0
+        while tv["player"] is player:
+            await asyncio.sleep(5)
+            try:
+                state = await player.refresh()
+                fails = 0
+            except Exception as e:  # noqa: BLE001
+                fails += 1
+                if fails >= 4:
+                    log.warning("lost the TV (%s)", type(e).__name__)
+                    player.state, player.error = "lost", "הקשר עם הטלוויזיה נותק"
+                    return
+                continue
+            if player.position and player.position > 5:
+                db.save_progress(player.media_id, player.position, player.duration)
+            stopped = stopped + 1 if state in ("STOPPED", "NO_MEDIA_PRESENT") else 0
+            if stopped >= 2:  # the TV stopped (end of the video, or stopped with its remote)
+                return
+
+    async def tv_play(request: Request):
+        data = await body(request)
+        media_id = int(data.get("media_id") or 0)
+        m = db.get_media(media_id)
+        if not m:
+            raise ApiError(404, "לא נמצא")
+        hit = tv["devices"] or (0, [])
+        dev = next((d for d in hit[1] if d["id"] == data.get("device")), None)
+        if not dev:
+            raise ApiError(404, "הטלוויזיה לא נמצאה. חפש שוב")
+        ip = lan_ip()
+        if not ip:
+            raise ApiError(400, "המכשיר לא מחובר ל-Wi-Fi של הבית")
+        port = request.url.port or int(os.getenv("PORT", "8000"))
+        url = f"http://{ip}:{port}/api/stream/{media_id}?t={cast_token(media_id)}"
+        t = db.get_title(m["title_id"]) or {}
+        name = t.get("name") or "Streamora"
+        if m.get("episode") is not None:
+            name += f" · ע{m.get('season') or 1} פ{m['episode']}"
+        old = tv["player"]
+        player = dlna.TVPlayer(dev, media_id, url, name, m["mime"] or "video/mp4")
+        tv["player"] = player  # the old one's watcher ends by itself
+        log.info("playing on TV %s: video %s from %s", dev["name"], media_id, hms_log(data.get("position")))
+        try:
+            await player.start(float(data.get("position") or 0))
+        except Exception as e:  # noqa: BLE001
+            tv["player"] = old if old and old.state not in ("STOPPED", "lost") else None
+            log.warning("the TV did not start the video: %s: %s", type(e).__name__, e)
+            raise ApiError(502, "הטלוויזיה לא הסכימה לנגן את הסרטון. "
+                                "בדוק שהיא דלוקה, ואם היא שואלת אם לאשר את המכשיר – אשר עם השלט") from e
+        tv["task"] = asyncio.create_task(tv_watch(player))
+        return ok(tv_info())
+
+    def hms_log(p) -> str:
+        return dlna.hms(float(p or 0))
+
+    def tv_info() -> dict:
+        p = tv["player"]
+        if not p:
+            return {"active": False}
+        return {"active": p.state not in ("STOPPED", "NO_MEDIA_PRESENT", "lost"), "state": p.state,
+                "device": p.device["name"], "media_id": p.media_id, "position": p.position,
+                "duration": p.duration, "error": p.error}
+
+    async def tv_status(request: Request):
+        return ok(tv_info())
+
+    async def tv_control(request: Request):
+        data = await body(request)
+        p = tv["player"]
+        if not p:
+            raise ApiError(404, "לא משודר כרגע לטלוויזיה")
+        action = str(data.get("action") or "")
+        if action not in ("play", "pause", "seek", "stop"):
+            raise ApiError(400, "פעולה לא מוכרת")
+        value = data.get("value")
+        if action == "seek" and data.get("delta") is not None:
+            value = (p.position or 0) + float(data["delta"])
+        try:
+            await p.command(action, float(value) if value is not None else None)
+        except Exception as e:  # noqa: BLE001
+            raise ApiError(502, "הטלוויזיה לא ענתה. נסה שוב") from e
+        if action == "stop":
+            if p.position and p.position > 5:
+                db.save_progress(p.media_id, p.position, p.duration)
+            tv["player"] = None
+        return ok({**tv_info(), "position": p.position})
 
     async def media_check(request: Request):
         """The player could not load a video: is it gone from Telegram? Then find another upload of it that works."""
@@ -1366,7 +1472,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/media/{id:int}", media_detail), R("/api/media/{id:int}", edit_media, methods=["PATCH"]),
         R("/api/progress/{id:int}", save_progress, methods=["POST"]),
         R("/api/watched/{id:int}", set_watched, methods=["POST"]),
-        R("/api/stream/{id:int}", stream), R("/api/thumb/{id:int}", thumb),
+        R("/api/stream/{id:int}", stream, methods=["GET", "HEAD"]),
+        R("/api/tv/devices", tv_devices), R("/api/tv/play", tv_play, methods=["POST"]),
+        R("/api/tv/control", tv_control, methods=["POST"]), R("/api/tv/status", tv_status), R("/api/thumb/{id:int}", thumb),
         R("/api/status", status), R("/api/settings", save_settings, methods=["POST"]),
         R("/api/tg/send-code", tg_send_code, methods=["POST"]),
         R("/api/tg/sign-in", tg_sign_in, methods=["POST"]),

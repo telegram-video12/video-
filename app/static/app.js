@@ -1220,6 +1220,7 @@ async function pageWatch(id) {
           <button class="pl-btn pl-txt" data-a="speed" id="speedbtn" title="מהירות">1x</button>
           ${isSeries ? '<button class="pl-btn" data-a="intro" title="הגדרת הפתיחה של הסדרה">⚙</button>' : ''}
           ${'remote' in HTMLMediaElement.prototype ? `<button class="pl-btn pl-cast" data-a="cast" aria-label="שידור לטלוויזיה" title="שידור לטלוויזיה"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zm20-7H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg></button>` : ''}
+          <button class="pl-btn pl-tvbtn" data-a="tv" aria-label="נגן בטלוויזיה" title="נגן בטלוויזיה (סמסונג ועוד)"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg></button>
           ${document.pictureInPictureEnabled ? '<button class="pl-btn" data-a="pip" aria-label="חלון צף" title="חלון צף">⧉</button>' : ''}
           <button class="pl-btn" data-a="fs" aria-label="מסך מלא">⛶</button>
         </div>
@@ -1261,13 +1262,14 @@ async function pageWatch(id) {
 
   // ---- saving progress
   const payload = () => ({position: v.currentTime || 0, duration: isFinite(v.duration) ? v.duration : null});
+  let onTv = false;  // playing on the TV: the TV's position is saved by the site, not this (paused) player's
   const save = (force) => {
-    if (!v.currentTime || (!force && Math.abs(v.currentTime - lastSaved) < 3)) return;
+    if (onTv || !v.currentTime || (!force && Math.abs(v.currentTime - lastSaved) < 3)) return;
     lastSaved = v.currentTime;
     api(`/api/progress/${m.id}`, {method: 'POST', body: payload()}).catch(() => {});
   };
   const beacon = () => {
-    if (!v.currentTime) return;
+    if (onTv || !v.currentTime) return;
     navigator.sendBeacon(`/api/progress/${m.id}`, new Blob([JSON.stringify(payload())], {type: 'application/json'}));
   };
 
@@ -1583,6 +1585,7 @@ async function pageWatch(id) {
         else if (e && e.name !== 'AbortError') toast('השידור לא זמין כרגע בדפדפן הזה', 4000);
       });
     },
+    tv: () => tvPick(),
     pip: () => {  // small floating window that stays on top of other apps
       if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
       else v.requestPictureInPicture().catch(() => toast('החלון הצף לא זמין כרגע בדפדפן הזה', 3000));
@@ -1647,6 +1650,103 @@ async function pageWatch(id) {
     else return;
     showUI();
   };
+  // ---- play on a smart TV (Samsung and others, DLNA): the TV fetches the video itself, no screen mirroring.
+  // This page becomes the remote.
+  let tvPoll = null;
+  const tvPanel = (info) => {
+    let p = wrap.querySelector('.tv-panel');
+    if (!info || !info.active) {
+      if (p) {
+        const at = info?.position;
+        p.remove();
+        if (onTv) {
+          onTv = false;
+          clearInterval(tvPoll);
+          if (at) { v.currentTime = at; lastSaved = at; }
+          toast(info?.error ? '📺 ' + esc(info.error) : '📺 השידור לטלוויזיה הסתיים. אפשר להמשיך לצפות כאן', 4000);
+        }
+      }
+      return;
+    }
+    onTv = true;
+    if (!p) {
+      p = document.createElement('div');
+      p.className = 'tv-panel';
+      p.innerHTML = `<div class="tv-name">📺 מנגן ב: <bdi><b></b></bdi></div><div class="tv-time"></div>
+        <div class="tv-row"><button class="pl-btn" data-tv="back">⟲</button><button class="pl-btn tv-pp" data-tv="pp">⏸</button>
+        <button class="pl-btn" data-tv="fwd">⟳</button></div>
+        <button class="btn tv-stop" data-tv="stop">⏹ עצור והמשך לצפות כאן</button>`;
+      ['pointerdown', 'pointerup', 'mousemove', 'dblclick'].forEach((ev) => p.addEventListener(ev, (e) => e.stopPropagation()));
+      p.addEventListener('click', async (e) => {
+        e.stopPropagation();  // the player underneath must not react
+        const b = e.target.closest('[data-tv]');
+        if (!b) return;
+        const a = b.dataset.tv, playing = p.dataset.state === 'PLAYING';
+        const body = a === 'back' ? {action: 'seek', delta: -10} : a === 'fwd' ? {action: 'seek', delta: 10}
+          : a === 'pp' ? {action: playing ? 'pause' : 'play'} : {action: 'stop'};
+        try {
+          const r = await api('/api/tv/control', {method: 'POST', body});
+          if (a === 'stop') tvPanel({active: false, position: r.position});
+          else tvPanel(r);
+        } catch (err) { toast(esc(err.message), 4000); }
+      });
+      wrap.appendChild(p);
+    }
+    p.dataset.state = info.state || '';
+    p.querySelector('.tv-name b').textContent = info.device;
+    p.querySelector('.tv-pp').textContent = info.state === 'PLAYING' ? '⏸' : '▶';
+    p.querySelector('.tv-time').textContent = info.state === 'starting' || info.state === 'TRANSITIONING' ? 'מתחיל...'
+      : `${fmtTime(info.position || 0)}${info.duration ? ' / ' + fmtTime(info.duration) : ''}`;
+  };
+  const tvFollow = () => {
+    clearInterval(tvPoll);
+    tvPoll = setInterval(async () => {
+      const r = await api('/api/tv/status').catch(() => null);
+      if (r && r.media_id === m.id) tvPanel(r);
+      else if (r && !r.active) tvPanel(r);
+    }, 2000);
+  };
+  async function tvPick() {
+    const el = document.createElement('div');
+    el.className = 'sheet-wrap';
+    el.innerHTML = '<div class="sheet"><div class="sheet-grip"></div><h3>📺 נגן בטלוויזיה</h3><div class="tv-list"><div class="spinner"></div><p class="muted" style="text-align:center">מחפש טלוויזיות בבית...</p></div></div>';
+    const hide = () => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); };
+    const release = sheetOpened(hide);
+    const close = () => { hide(); release(); };
+    el.addEventListener('click', (e) => { if (e.target === el) close(); });
+    document.body.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('open'));
+    const list = el.querySelector('.tv-list');
+    const load = async (fresh) => {
+      list.innerHTML = '<div class="spinner"></div><p class="muted" style="text-align:center">מחפש טלוויזיות בבית...</p>';
+      let r;
+      try { r = await api('/api/tv/devices' + (fresh ? '?fresh=1' : '')); } catch (err) { list.innerHTML = `<p class="muted">${esc(err.message)}</p>`; return; }
+      list.innerHTML = (r.devices.length
+        ? r.devices.map((d) => `<button class="sheet-opt" data-dev="${esc(d.id)}">📺 ${esc(d.name)}</button>`).join('')
+        : `<p class="sheet-note">לא נמצאה טלוויזיה. בדוק ש:<br>• הטלוויזיה דלוקה<br>• היא ו${r.lan ? 'המכשיר הזה' : 'המכשיר הזה (שלא מחובר ל-Wi-Fi כרגע!)'} על אותו Wi-Fi</p>`) +
+        '<button class="btn wide" data-again style="margin-top:10px">🔄 חפש שוב</button>';
+    };
+    list.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-again]')) { load(true); return; }
+      const b = e.target.closest('[data-dev]');
+      if (!b) return;
+      list.innerHTML = '<div class="spinner"></div><p class="muted" style="text-align:center">שולח לטלוויזיה...</p>';
+      const at = v.currentTime || m.position || 0;
+      try {
+        save(true);
+        const r = await api('/api/tv/play', {method: 'POST', body: {device: b.dataset.dev, media_id: m.id, position: at}});
+        v.pause();
+        close();
+        tvPanel(r);
+        tvFollow();
+      } catch (err) {
+        list.innerHTML = `<p class="sheet-note">${esc(err.message)}</p><button class="btn wide" data-again>🔄 חפש שוב</button>`;
+      }
+    });
+    load(false);
+  }
+  api('/api/tv/status').then((r) => { if (r.active && r.media_id === m.id) { tvPanel(r); tvFollow(); } }).catch(() => {});
+
   const onHide = () => { if (document.visibilityState === 'hidden') beacon(); };
   const onFs = () => document.body.classList.toggle('pl-fs', !!document.fullscreenElement);
   document.addEventListener('keydown', onKey);
@@ -1657,6 +1757,7 @@ async function pageWatch(id) {
 
   cleanup = () => {
     if (!finished) beacon();
+    clearInterval(tvPoll);
     clearInterval(timer);
     clearInterval(nextTimer);
     clearInterval(tick);
