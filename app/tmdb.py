@@ -24,6 +24,13 @@ def _day(text: str | None) -> float | None:
         return None
 
 
+def made_in_israel(item: dict) -> int:
+    """Israeli by TMDB: made in Israel, or its original language is Hebrew. (Shown on yes / HOT does not count.)"""
+    countries = set(item.get("origin_country") or [])
+    countries |= {c.get("iso_3166_1") for c in item.get("production_countries") or []}
+    return int(item.get("original_language") == "he" or "IL" in countries)
+
+
 def available(media_type: str, item: dict) -> dict:
     """When it became available to watch, by TMDB (for the "סרט חדש" / "פרק חדש" badges; 0 = TMDB does not know).
     A movie: its DIGITAL release (streaming / buying online; the earliest country), else its release date - so a
@@ -261,6 +268,7 @@ class TMDB:
             "runtime": int(runtime) if runtime else None,
             "cast": cast,
             **available(media_type, item),
+            "made_in_il": made_in_israel(item),
             # movie: the movie series it belongs to (Spider-Man 1, 2, 3...); 0 = none
             "collection_id": ((item.get("belongs_to_collection") or {}).get("id") or 0) if media_type == "movie" else None,
         }
@@ -305,6 +313,7 @@ class TMDB:
             tmdb_details=1,
             last_year=meta.get("last_year"),
             collection_id=meta.get("collection_id"),
+            made_in_il=meta.get("made_in_il"),
             avail_at=meta.get("avail_at"),
             last_ep_season=meta.get("last_ep_season"),
             last_ep_number=meta.get("last_ep_number"),

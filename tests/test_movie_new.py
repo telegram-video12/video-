@@ -121,3 +121,21 @@ def test_site_counts_ignore_filters(client):
     full = client.get("/api/library?kind=movie").json()["site_counts"]
     filtered = client.get("/api/library?kind=movie&genres=nothing").json()
     assert filtered["total"] == 0 and filtered["site_counts"] == full and full["movie"] >= 1
+
+
+def test_israeli_genre_by_tmdb(tmp_path):
+    from app.tmdb import made_in_israel
+
+    assert made_in_israel({"original_language": "en", "origin_country": ["US"]}) == 0
+    assert made_in_israel({"original_language": "he"}) == 1
+    assert made_in_israel({"original_language": "en", "production_countries": [{"iso_3166_1": "IL"}]}) == 1
+
+    db = Database(tmp_path / "z.db")
+    a, _ = _movie(db, "חוות דאטון", 2025, 0, 1)  # shown on yes: the caption made it "il"
+    b, _ = _movie(db, "חצויה", 2016, 0, 2)
+    c, _ = _movie(db, "לא נבדק", 2016, 0, 3)
+    db.update_title(a, origin="il", made_in_il=0)
+    db.update_title(b, made_in_il=1)
+    db.update_title(c, origin="il")  # TMDB does not know it: the group/caption decides
+    g = {t["id"]: "ישראלי" in t["genres"] for t in db.library_titles()}
+    assert g == {a: False, b: True, c: True}

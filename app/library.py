@@ -380,6 +380,14 @@ def refresh_series_years(db: Database) -> None:
     db.set_pref("series_last_year", "1")
 
 
+def refresh_made_in_israel(db: Database) -> None:
+    """Once: everything matched on TMDB fetches its details again to learn where it was made ("ישראלי")."""
+    if db.get_pref("made_in_il") == "1":
+        return
+    db.x("UPDATE titles SET tmdb_details = 0 WHERE tmdb_id IS NOT NULL AND made_in_il IS NULL", soft=True)
+    db.set_pref("made_in_il", "1")
+
+
 def refresh_release_dates(db: Database) -> None:
     """Once: everything matched on TMDB fetches its details again to learn when it came out to watch."""
     if db.get_pref("avail_dates") == "1":

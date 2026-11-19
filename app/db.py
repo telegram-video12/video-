@@ -167,7 +167,8 @@ class Database:
                          # when TMDB says it came out to watch (movie: digital release; series: its latest aired
                          # episode, which one, and whether it ended a season). NULL = not asked yet, 0 = unknown
                          ("avail_at", "REAL"), ("last_ep_season", "INTEGER"), ("last_ep_number", "INTEGER"),
-                         ("last_ep_finale", "INTEGER")):  # movie: its TMDB movie series (0 = none, NULL = not known yet)  # 'il' Israeli / 'intl' from abroad / NULL unknown
+                         ("last_ep_finale", "INTEGER"),
+                         ("made_in_il", "INTEGER")):  # Israeli by TMDB (country / Hebrew); NULL = not asked yet  # movie: its TMDB movie series (0 = none, NULL = not known yet)  # 'il' Israeli / 'intl' from abroad / NULL unknown
             if col not in tcols:  # TMDB details (genres, rating, length, cast)
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
@@ -357,7 +358,8 @@ class Database:
         allowed = {"kind", "name", "norm_name", "year", "overview", "poster", "backdrop", "tmdb_id", "tmdb_checked",
                    "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details",
                    "intro_start", "intro_end", "last_year", "name_manual", "hidden_title", "origin", "collection_id",
-                   "avail_at", "last_ep_season", "last_ep_number", "last_ep_finale"}
+                   "avail_at", "last_ep_season", "last_ep_number", "last_ep_finale",
+                   "made_in_il"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -463,8 +465,11 @@ class Database:
                     t["genres"] = json.loads(t["genres"] or "[]")
                 except ValueError:
                     t["genres"] = []
-                # "ישראלי" as a genre: an Israeli group/caption, or TMDB's original name is in Hebrew
-                if (t.get("origin") == "il" or HEBREW.search(t["original_name"] or "")) and "ישראלי" not in t["genres"]:
+                # "ישראלי" as a genre: by TMDB (made in Israel / Hebrew) when it knows; otherwise an Israeli
+                # group/caption or a Hebrew original name. (A caption saying "yes"/"HOT" = only SHOWN in Israel.)
+                il = t["made_in_il"] if t.get("made_in_il") is not None else (
+                    t.get("origin") == "il" or HEBREW.search(t["original_name"] or ""))
+                if il and "ישראלי" not in t["genres"]:
                     t["genres"].append("ישראלי")
             self._titles_cache = c = (self.version, self.soft_version, time.time(), rows)
         return c[3]
@@ -503,7 +508,7 @@ class Database:
     def list_titles(self) -> list[dict]:
         return self.q(
             f"""
-            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.collection_id, t.avail_at, t.last_ep_finale, t.poster, t.backdrop, t.overview, t.genres, t.rating,
+            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.collection_id, t.avail_at, t.last_ep_finale, t.made_in_il, t.poster, t.backdrop, t.overview, t.genres, t.rating,
                    t.original_name,
                    COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,
