@@ -87,6 +87,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SCAN_INTERVAL_MINUTES", "0")
     monkeypatch.setenv("MIN_DURATION_SECONDS", "180")
     app = create_app(Settings(), tg=FakeTG())
+    app.state.db.always_fresh = True  # the site serves the previous library list while rebuilding; tests wait
     with TestClient(app) as c:
         yield c
 
@@ -101,9 +102,19 @@ def login(c):
 
 def scan(c):
     c.post("/api/chats", json={"chats": [{"id": -100, "title": "קבוצת סדרות", "enabled": True}]})
+    wait_scans(c)
     c.app.state.scanner.status["running"] = False
     import asyncio
     asyncio.run(c.app.state.scanner.scan())
+
+
+def wait_scans(c, seconds=10):
+    """Choosing a group starts a scan inside the site: let it finish first, so the test's own scan really runs."""
+    import time as _t
+    sc = c.app.state.scanner
+    until = _t.time() + seconds
+    while (sc._lock.locked() or (getattr(sc, '_tmdb_task', None) and not sc._tmdb_task.done())) and _t.time() < until:
+        _t.sleep(0.02)
 
 
 def test_setup_then_login(client):
@@ -255,6 +266,7 @@ def test_season_per_channel(client):
     tg.iter_messages = iter_messages
     client.post("/api/chats", json={"chats": [{"id": -200, "title": "סאגת אלבסטה", "enabled": True}]})
     import asyncio
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     tid = client.get("/api/library").json()["titles"][0]["id"]
     seasons = lambda: [(m["season"], m["episode"]) for m in client.get(f"/api/titles/{tid}").json()["media"]]
@@ -269,6 +281,7 @@ def test_season_per_channel(client):
     d = {x["id"]: x for x in client.get("/api/dialogs").json()}
     # new episodes from that channel also get season 2
     second.append((12, VideoMessage(-200, 12, "וואן פיס פרק 64", "", len(FILE), "video/mp4", 1500, 0, 0, 2002)))
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     assert (2, 64) in seasons()
     # clearing the season puts them back to automatic
@@ -393,6 +406,7 @@ def test_channel_signatures_are_removed(client):
                 yield mid, v
     tg.iter_messages = iter_messages
     client.post("/api/chats", json={"chats": [{"id": c, "title": f"ערוץ {c}", "enabled": True} for c in chats]})
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     lib = client.get("/api/library?limit=200").json()
     names = sorted(t["name"] for t in lib["titles"])
@@ -406,6 +420,7 @@ def test_channel_signatures_are_removed(client):
     assert "הארי פוטר ואבן החכמים" in names                  # a real shared word is not a signature
     # a later upload in the same channel is cleaned right away
     msgs[-1].append((100, VideoMessage(-1, 100, "קינג סרט טיטאניק 4K", "", len(FILE), "video/mp4", 5000 + 8 * 97, None, None, 5000)))
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     titanic = client.get("/api/library?q=טיטאניק").json()["titles"]
     assert len(titanic) == 1

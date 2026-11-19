@@ -135,12 +135,19 @@ class Database:
         self._build_lock = threading.Lock()
         self._refreshing = False
         self.soft_refresh_seconds = 10  # 60 while TMDB updates the whole library in the background
+        self.always_fresh = False  # tests: wait for every change instead of serving the previous list
+        self.wants_fresh = False  # set after YOUR change (an edit, "watched"): the next list waits for it a little
+        self._refresh_done = threading.Event()
+        self._reader: sqlite3.Connection | None = None
+        self._key_memo: dict = {}
+        self._snapshot_at = 0.0
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA synchronous = NORMAL")  # safe with WAL, and much faster saving on Windows
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
+        self._load_snapshot()
 
     def _migrate(self) -> None:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(chats)")}
@@ -448,53 +455,110 @@ class Database:
         )
 
     def library_titles(self) -> list[dict]:
-        """Cached list of everything in the library, recomputed after something changed.
-        Your own changes (a new version) are waited for; background updates (TMDB posters / dates, a scan)
-        only refresh it in the background: until then the previous list is served at once, so no page waits."""
+        """Cached list of everything in the library. It is never rebuilt while a page waits (on a phone a rebuild
+        of a big library takes several seconds): after any change the previous list is served at once and a new
+        one is built in the background. Your own changes (wants_fresh) wait for it up to 3 seconds."""
         c = self._titles_cache
-        if c and c[0] == self.version:
-            if c[1] != self.soft_version and time.time() - c[2] > self.soft_refresh_seconds:
-                self._refresh_titles_soon()
-            return c[3]
-        with self._build_lock:  # one build at a time; who waited gets the list the other one built
-            c = self._titles_cache
-            if not c or c[0] != self.version:
-                self._build_titles()
+        if c is None:  # the very first time, with no saved copy: nothing to show yet
+            with self._build_lock:
+                if self._titles_cache is None:
+                    self._build_titles()
             return self._titles_cache[3]
+        if (c[0], c[1]) == (self.version, self.soft_version):
+            return c[3]
+        if self.always_fresh and c[0] != self.version:  # tests: every change is seen right away
+            with self._build_lock:
+                if self._titles_cache[0] != self.version:
+                    self._build_titles()
+            return self._titles_cache[3]
+        if self.wants_fresh:  # you just changed something: try to show it
+            self.wants_fresh = False
+            want, until = self.version, time.time() + 3
+            while self._titles_cache[0] < want and time.time() < until:  # a build already running may be older
+                self._refresh_titles_soon().wait(max(0.0, until - time.time()))
+            return self._titles_cache[3]
+        # a scan / regrouping: rebuild right away; TMDB's stream of small updates: at most every soft_refresh_seconds
+        if c[0] != self.version or time.time() - c[2] > self.soft_refresh_seconds:
+            self._refresh_titles_soon()
+        return c[3]
 
-    def _refresh_titles_soon(self) -> None:
+    def _refresh_titles_soon(self) -> threading.Event:
         if self._refreshing:
-            return
+            return self._refresh_done
         self._refreshing = True
+        done = self._refresh_done = threading.Event()
 
         def run() -> None:
             try:
                 with self._build_lock:
                     c = self._titles_cache
-                    if c and (c[0], c[1]) != (self.version, self.soft_version):
+                    if not c or (c[0], c[1]) != (self.version, self.soft_version):
                         self._build_titles()
             except Exception:  # noqa: BLE001 - the next request tries again
                 logging.getLogger(__name__).exception("refreshing the library list failed")
             finally:
                 self._refreshing = False
+                done.set()
         threading.Thread(target=run, daemon=True).start()
+        return done
+
+    def _reader_q(self, sql: str, args: tuple | list = ()) -> list[dict]:
+        """Reading for the list build on its own connection: the rest of the site does not wait for it."""
+        if self.path == ":memory:":
+            return self.q(sql, args)
+        if self._reader is None:
+            self._reader = sqlite3.connect(self.path, check_same_thread=False)
+            self._reader.row_factory = sqlite3.Row
+        return [dict(r) for r in self._reader.execute(sql, args).fetchall()]
+
+    def _snapshot_path(self) -> Path | None:
+        return None if self.path == ":memory:" else Path(self.path + ".list.json")
+
+    def _load_snapshot(self) -> None:
+        """The list saved last time: the site shows it right after starting while a fresh one is built."""
+        p = self._snapshot_path()
+        try:
+            if p and p.exists():
+                rows = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(rows, list):
+                    self._titles_cache = (-1, -1, 0.0, rows)
+        except (OSError, ValueError):
+            pass
+
+    def _save_snapshot(self, rows: list[dict]) -> None:
+        p = self._snapshot_path()
+        if not p or time.time() - self._snapshot_at < 300:  # at most every 5 minutes
+            return
+        self._snapshot_at = time.time()
+        try:
+            tmp = p.with_suffix(".tmp")
+            tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(p)
+        except OSError:
+            pass
 
     def _build_titles(self) -> None:
         from .parser import normalize, skeleton
 
         version, soft = self.version, self.soft_version  # changes made while building make it stale again
+        q = self._reader_q
+        keys = self._key_memo
+        if len(keys) > 50000:
+            keys.clear()
 
-        rows = self.list_titles()
-        fresh = self.new_episodes()
+        rows = self.list_titles(q)
+        fresh = self.new_episodes(q)
         mark_sequels(rows)
-        has_latest = self.have_latest_episode(time.time() - 61 * 86400)
+        has_latest = self.have_latest_episode(time.time() - 61 * 86400, q)
         for t in rows:
             if t["kind"] == "series" and t["id"] not in has_latest:
                 t["avail_at"] = None  # the newest episode TMDB knows is not on the site yet: nothing new to watch
             t["new_count"], t["new_at"] = fresh.get(t["id"], (0, None))  # search keys and parsed genres, computed once per change
-            t["_key"] = normalize(t["name"] or "")
-            t["_okey"] = normalize(t["original_name"] or "")
-            t["_skel"] = skeleton(t["_key"])
+            k = (t["name"], t["original_name"])  # search keys: worked out once per name, not on every rebuild
+            if k not in keys:
+                key = normalize(t["name"] or "")
+                keys[k] = (key, normalize(t["original_name"] or ""), skeleton(key))
+            t["_key"], t["_okey"], t["_skel"] = keys[k]
             try:
                 t["genres"] = json.loads(t["genres"] or "[]")
             except ValueError:
@@ -506,20 +570,21 @@ class Database:
             if il and "ישראלי" not in t["genres"]:
                 t["genres"].append("ישראלי")
         self._titles_cache = (version, soft, time.time(), rows)
+        self._save_snapshot(rows)
 
-    def have_latest_episode(self, since: float) -> set[int]:
+    def have_latest_episode(self, since: float, q=None) -> set[int]:
         """Series that aired an episode lately (by TMDB) AND have that episode (or a later one) on the site."""
-        return {r["title_id"] for r in self.q(
+        return {r["title_id"] for r in (q or self.q)(
             """SELECT DISTINCT m.title_id FROM titles t JOIN media m ON m.title_id = t.id AND m.hidden = 0
                WHERE t.kind = 'series' AND t.avail_at > ? AND t.last_ep_number IS NOT NULL
                  AND (COALESCE(m.season, 1) > COALESCE(t.last_ep_season, 1)
                       OR (COALESCE(m.season, 1) = COALESCE(t.last_ep_season, 1) AND m.episode >= t.last_ep_number))""",
             (since,))}
 
-    def new_episodes(self) -> dict[int, tuple[int, float]]:
+    def new_episodes(self, q=None) -> dict[int, tuple[int, float]]:
         """Series you watch that got episodes AFTER you last watched them (and you have not seen yet):
         {title_id: (how many new episodes, when the newest arrived)}."""
-        rows = self.q(
+        rows = (q or self.q)(
             f"""WITH w AS (SELECT m.title_id, MAX(p.updated_at) AS last FROM progress p JOIN media m ON m.id = p.media_id
                            WHERE p.completed = 1 OR p.position >= {MIN_STARTED} GROUP BY m.title_id),
                      done AS (SELECT DISTINCT m.title_id, {EP_KEY} AS k FROM progress p JOIN media m ON m.id = p.media_id
@@ -538,8 +603,8 @@ class Database:
                         WHERE m.title_id = ? AND (p.completed = 1 OR p.position >= {MIN_STARTED})""", (title_id,))
         return r["last"] if r else None
 
-    def list_titles(self) -> list[dict]:
-        return self.q(
+    def list_titles(self, q=None) -> list[dict]:
+        return (q or self.q)(
             f"""
             SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.collection_id, t.avail_at, t.last_ep_finale, t.made_in_il, t.poster, t.backdrop, t.overview, t.genres, t.rating,
                    t.original_name,

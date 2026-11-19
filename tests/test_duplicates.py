@@ -1,7 +1,7 @@
 """Same movie under a name with extra words: joined automatically or suggested."""
 import asyncio
 
-from test_api import FakeTG, client, login, scan, vm  # noqa: F401 - pytest fixture
+from test_api import wait_scans, FakeTG, client, login, scan, vm  # noqa: F401 - pytest fixture
 
 from app.tmdb import TMDB
 
@@ -180,6 +180,7 @@ def test_group_marked_israeli(client):
     client.post("/api/chats", json={"chats": [{"id": -100, "title": "קבוצת סדרות", "enabled": True, "origin": "il"}]})
     assert client.get("/api/dialogs").json()[0]["origin"] == "il"
     client.app.state.scanner.status["running"] = False
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     lib = client.get("/api/library?kind=series").json()["titles"]
     assert lib and all("ישראלי" in t["genres"] for t in lib)

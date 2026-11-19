@@ -2,7 +2,7 @@
 import asyncio
 import time
 
-from test_api import FakeTG, client, login, scan, vm  # noqa: F401 - pytest fixture
+from test_api import wait_scans, FakeTG, client, login, scan, vm  # noqa: F401 - pytest fixture
 
 
 def test_new_episodes_and_surprise(client):
@@ -19,6 +19,7 @@ def test_new_episodes_and_surprise(client):
     new = vm(20, "פאודה עונה 1 פרק 3")
     new.date = time.time() + 60
     tg.messages.append((20, new))
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     home = client.get("/api/home").json()
     assert [t["name"] for t in home["new"]] == ["פאודה"] and home["new"][0]["new_count"] == 1

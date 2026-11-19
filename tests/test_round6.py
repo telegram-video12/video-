@@ -1,5 +1,5 @@
 """Round 6: watch later, history, stats."""
-from test_api import FakeTG, client, login, scan  # noqa: F401 - pytest fixture
+from test_api import wait_scans, FakeTG, client, login, scan  # noqa: F401 - pytest fixture
 
 
 def test_watchlist_history_and_stats(client):
@@ -46,6 +46,7 @@ def test_recently_added_means_added_to_the_library(client):
     old.date = 1000  # posted on Telegram long ago, but added to the library just now
     tg.messages.append((50, old))
     import asyncio
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     first = client.get("/api/library?kind=series&limit=5").json()["titles"][0]
     assert first["name"] == "החיים זה לא הכל"
@@ -282,12 +283,14 @@ def test_group_without_access_and_switching_to_another_upload(client):
     tg.iter_messages, tg.get_message = iter_messages, get_message
     client.post("/api/chats", json={"chats": [{"id": -100, "title": "א", "enabled": True},
                                               {"id": -200, "title": "ב", "enabled": True}]})
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     movie = client.get("/api/library?kind=movie").json()["titles"][0]
     best = client.app.state.db.q1("SELECT id FROM media WHERE chat_id = -100")["id"]  # the upload in group א
 
     tg.gone = True  # you left group א
     client.app.state.db.reset_chat(-100)
+    wait_scans(client)
     asyncio.run(client.app.state.scanner.scan())
     rep = {r["chat"]: r for r in client.get("/api/status").json()["scan"]["report"]}
     assert rep["א"]["no_access"] and rep["א"]["library"] == 1 and not rep["ב"].get("no_access")

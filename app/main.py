@@ -82,8 +82,9 @@ def telegram_error_message(e: Exception) -> str:
 class AuthMiddleware:
     """Pure ASGI middleware (keeps video streaming efficient)."""
 
-    def __init__(self, app, settings: Settings, valid_token, valid_cast=None):
+    def __init__(self, app, settings: Settings, valid_token, valid_cast=None, on_change=None):
         self.app, self.settings, self.valid_token, self.valid_cast = app, settings, valid_token, valid_cast
+        self.on_change = on_change
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -116,7 +117,12 @@ class AuthMiddleware:
             else:
                 resp = RedirectResponse("/login", status_code=302)
             return await resp(scope, receive, send)
-        return await self.app(scope, receive, send)
+        await self.app(scope, receive, send)
+        # you changed something (an edit, "watched", a list): the next pages should show it.
+        # Saving the playing position every few seconds does not count.
+        if (self.on_change and scope.get("method") not in ("GET", "HEAD") and path.startswith("/api/")
+                and not path.startswith(("/api/progress", "/api/sync", "/api/logout", "/api/scan"))):
+            self.on_change()
 
 
 def create_app(settings: Settings | None = None, tg: TelegramService | None = None) -> Starlette:
@@ -1329,6 +1335,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={ApiError: api_error, Exception: server_error})
-    app.add_middleware(AuthMiddleware, settings=settings, valid_token=valid_token, valid_cast=valid_cast)
+    app.add_middleware(AuthMiddleware, settings=settings, valid_token=valid_token, valid_cast=valid_cast,
+                       on_change=lambda: setattr(db, "wants_fresh", True))
     app.state.db, app.state.tg, app.state.scanner, app.state.settings = db, tg, scanner, settings
     return app

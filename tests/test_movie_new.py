@@ -15,6 +15,7 @@ def _movie(db, name, year, coll, msg):
 
 def test_sequel_of_a_watched_movie(tmp_path):
     db = Database(tmp_path / "x.db")
+    db.always_fresh = True
     a, ma = _movie(db, "אבא גנוב", 1987, 77, 1)
     b, _ = _movie(db, "אבא גנוב 2", 1989, 77, 2)
     c, _ = _movie(db, "סרט אחר", 2020, 0, 3)
@@ -153,5 +154,19 @@ def test_library_list_refreshes_in_the_background(tmp_path):
             break
         time.sleep(0.02)
     assert db.library_titles()[0]["poster"] == "p.jpg"
+    db.wants_fresh = True
     db.update_title(a, name="שונה")  # your own change: right away
     assert db.library_titles()[0]["name"] == "שונה"
+
+
+def test_list_saved_for_the_next_start_and_own_changes_wait(tmp_path):
+    db = Database(tmp_path / "s.db")
+    a, _ = _movie(db, "שמור", 2001, 0, 1)
+    db.library_titles()
+    db2 = Database(tmp_path / "s.db")  # the site starts again: the saved list is there at once
+    assert db2._titles_cache[0] == -1 and db2.library_titles()[0]["name"] == "שמור"
+    db.x("UPDATE titles SET name = 'אחר'")  # a background change: the previous list at once
+    assert db.library_titles()[0]["name"] == "שמור"
+    db.wants_fresh = True
+    db.x("UPDATE titles SET name = 'שלי'")  # your own change: waited for
+    assert db.library_titles()[0]["name"] == "שלי"
