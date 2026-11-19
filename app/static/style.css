@@ -903,3 +903,9 @@ html.tv .tv-sel:not(.poster-card):not(.cf-card) { outline: 4px solid var(--gold)
 html.tv .poster-card.tv-sel { outline: none; transform: scale(1.07); z-index: 2; position: relative; }
 html.tv .poster-card.tv-sel .poster { box-shadow: 0 0 0 4px var(--gold), 0 12px 30px rgba(0,0,0,.6); }
 html.tv .cf-card.tv-sel { box-shadow: 0 0 0 5px var(--gold) !important; }
+
+/* TV: the player fills the page, its buttons stay while the remote is on them */
+html.tv body.in-player { zoom: 1; }
+html.tv body.pl-fs .watch-side, html.tv body.pl-fs .tvbar { display: none; }
+html.tv .player-wrap.tv-ctl .pl-top, html.tv .player-wrap.tv-ctl .pl-bar { opacity: 1 !important; pointer-events: auto !important; }
+html.tv .player-wrap .pl-bar .pl-btn { min-width: 52px; min-height: 52px; font-size: 22px; }

@@ -212,6 +212,7 @@ function tvCur() {
   return a && a !== document.body && tvVisible(a) ? a : null;
 }
 function tvBlur() {
+  tvControls(null);
   if (tvSel) tvSel.classList.remove('tv-sel');
   tvSel = null;
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
@@ -270,7 +271,15 @@ function tvMove(dir) {
   }
   if (best) tvFocus(best, dir === 'up' || dir === 'down');
 }
+function tvControls(el) {  // the player's buttons stay on screen while the remote is on them
+  const wrap = document.querySelector('.player-wrap');
+  if (!wrap) return;
+  const on = !!(el && el.closest('.pl-bar, .pl-top'));
+  wrap.classList.toggle('tv-ctl', on);
+  if (on) wrap.classList.add('show-ui');
+}
 function tvFocus(el, vertical) {
+  tvControls(el);
   if (tvSel && tvSel !== el) tvSel.classList.remove('tv-sel');
   tvSel = el;
   el.classList.add('tv-sel');
@@ -2109,7 +2118,8 @@ async function pageWatch(id) {
   api('/api/tv/status').then((r) => { if (r.active && r.media_id === m.id) { tvPanel(r); tvFollow(); } }).catch(() => {});
 
   const onHide = () => { if (document.visibilityState === 'hidden') beacon(); };
-  const onFs = () => document.body.classList.toggle('pl-fs', !!document.fullscreenElement);
+  // on a TV the player always fills the page (full screen needs a real press, which the phone remote is not)
+  const onFs = () => document.body.classList.toggle('pl-fs', !!document.fullscreenElement || IS_TV);
   document.addEventListener('keydown', onKey);
   document.addEventListener('visibilitychange', onHide);
   document.addEventListener('fullscreenchange', onFs);
