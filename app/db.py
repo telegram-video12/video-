@@ -75,6 +75,12 @@ CREATE TABLE IF NOT EXISTS watchlist (
     added_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tmdb_extras (  -- the title page's trailer / recommendations / next episode (kept a day)
+    title_id   INTEGER PRIMARY KEY,
+    data       TEXT NOT NULL,
+    fetched_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS prefs (
     key   TEXT PRIMARY KEY,
     value TEXT

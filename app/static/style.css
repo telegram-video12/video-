@@ -813,3 +813,19 @@ body.pl-fs { overflow: hidden; }
 .newdays { display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
 .newdays input { width: 64px; margin: 0 6px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line, #24343d);
   background: var(--card, #0f1c24); color: inherit; font: inherit; text-align: center; }
+
+/* title page: next episode, trailer, actor page */
+a.castm { color: inherit; text-decoration: none; }
+a.castm:hover .cn { color: var(--gold); }
+.next-ep { margin-top: 10px; font-size: 14px; background: rgba(22, 217, 197, .1);
+  border: 1px solid rgba(22, 217, 197, .28); border-radius: 10px; padding: 7px 12px; display: inline-block; }
+#trailer-btn { margin-top: 8px; }
+.trailer-sheet { max-width: 860px; }
+.trailer-box { position: relative; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; background: #000; }
+.trailer-box iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.trailer-sheet .sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.trailer-sheet .sheet-note { margin-top: 10px; font-size: 13px; }
+.trailer-sheet .sheet-note a { color: var(--gold); font-weight: 600; white-space: nowrap; }
+.person-head { display: flex; align-items: center; gap: 16px; margin: 8px 0 18px; }
+.person-head h1 { font-size: 24px; margin: 0 0 4px; }
+.avatar.big { width: 96px; height: 96px; margin: 0; font-size: 32px; }

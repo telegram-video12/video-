@@ -619,6 +619,71 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if resume else None,
         })
 
+    async def title_extras(request: Request):
+        """Trailer, "עוד בסגנון הזה" (only what is in YOUR library) and when the next episode airs."""
+        title_id = request.path_params["id"]
+        t = db.get_title(title_id)
+        if not t:
+            raise ApiError(404, "לא נמצא")
+        ex = None
+        if t.get("tmdb_id"):
+            row = db.q1("SELECT data, fetched_at FROM tmdb_extras WHERE title_id = ?", (title_id,))
+            ex = json.loads(row["data"]) if row else None
+            if scanner.tmdb and (not row or time.time() - row["fetched_at"] > 86400 or ex.get("tmdb_id") != t["tmdb_id"]):
+                try:
+                    ex = {**await asyncio.wait_for(scanner.tmdb.extras(t["kind"], t["tmdb_id"]), 10),
+                          "tmdb_id": t["tmdb_id"]}
+                    db.x("INSERT OR REPLACE INTO tmdb_extras (title_id, data, fetched_at) VALUES (?, ?, ?)",
+                         (title_id, json.dumps(ex, ensure_ascii=False), time.time()), soft=True)
+                except Exception as e:  # noqa: BLE001 - no internet / TMDB slow: the page works without these
+                    log.info("TMDB extras failed for %s: %s", title_id, type(e).__name__)
+        ex = ex or {}
+        items = db.library_titles()
+        by_tmdb = {x["tmdb_id"]: x for x in (db.q("SELECT id, tmdb_id FROM titles WHERE kind = ? AND tmdb_id IS NOT NULL",
+                                                    (t["kind"],)))}
+        by_id = {x["id"]: x for x in items}
+        days = new_days()
+        more, seen = [], {title_id}
+        for tid in ex.get("related") or []:
+            x = by_id.get((by_tmdb.get(tid) or {}).get("id"))
+            if x and x["id"] not in seen:
+                seen.add(x["id"])
+                more.append(card(x, days))
+        if len(more) < 8:  # TMDB found few of yours: fill up with the same genres (not ones you finished)
+            mine = by_id.get(title_id)
+            genres = set((mine or {}).get("genres") or []) - {"ישראלי"}
+            if genres:
+                cands = [x for x in items if x["kind"] == t["kind"] and x["id"] not in seen and x["poster"]
+                         and len(genres & set(x["genres"])) >= min(2, len(genres))
+                         and not (x["media_count"] and x["watched_count"] >= x["media_count"])]
+                cands.sort(key=lambda x: (-len(genres & set(x["genres"])), -(x["rating"] or 0)))
+                more += [card(x, days) for x in cands[:20 - len(more)]]
+        nxt = ex.get("next")
+        if nxt and nxt["date"] < time.strftime("%Y-%m-%d"):
+            nxt = None  # already aired (old saved info)
+        return ok({"trailer": ex.get("trailer"), "more": more[:20], "next": nxt,
+                   "ended": ex.get("status") in ("Ended", "Canceled")})
+
+    async def person(request: Request):
+        """An actor: everything of theirs in your library (by the cast lists TMDB gave)."""
+        name = (request.query_params.get("name") or "").strip()
+        if not name:
+            raise ApiError(400)
+        by_id = {x["id"]: x for x in db.library_titles()}
+        photo, found = None, []
+        for r in db.q("SELECT id, cast_json FROM titles WHERE cast_json LIKE ?", (f"%{name}%",)):
+            try:
+                cast = json.loads(r["cast_json"] or "[]")
+            except ValueError:
+                continue
+            c = next((c for c in cast if c.get("name") == name), None)
+            if c and r["id"] in by_id:
+                photo = photo or c.get("photo")
+                found.append(by_id[r["id"]])
+        found.sort(key=lambda x: x["year"] or 0, reverse=True)
+        days = new_days()
+        return ok({"name": name, "photo": photo, "titles": [card(x, days) for x in found]})
+
     async def edit_title(request: Request):
         title_id = request.path_params["id"]
         if not db.get_title(title_id):
@@ -1225,6 +1290,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         R("/api/titles/{id:int}", title_detail), R("/api/titles/{id:int}", edit_title, methods=["PATCH"]),
         R("/api/titles/{id:int}/merge", merge_title, methods=["POST"]),
         R("/api/media/{id:int}/check", media_check), R("/api/chats/{id}/hide-media", hide_chat_media, methods=["POST"]),
+        R("/api/titles/{id:int}/extras", title_extras), R("/api/person", person),
         R("/api/titles/{id:int}/channels", title_channels), R("/api/titles/{id:int}/split", split_title, methods=["POST"]),
         R("/api/media/{id:int}", media_detail), R("/api/media/{id:int}", edit_media, methods=["PATCH"]),
         R("/api/progress/{id:int}", save_progress, methods=["POST"]),

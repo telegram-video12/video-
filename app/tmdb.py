@@ -40,6 +40,31 @@ def available(media_type: str, item: dict) -> dict:
             "last_ep_finale": int(last.get("episode_type") == "finale")}
 
 
+def pick_trailer(videos: list[dict]) -> dict | None:
+    """The best YouTube trailer: Hebrew before English, a trailer before a teaser, official first."""
+    def score(v):
+        return (v.get("iso_639_1") == "he", v.get("type") == "Trailer", bool(v.get("official")),
+                v.get("published_at") or "")
+    ok = [v for v in videos if v.get("site") == "YouTube" and v.get("key") and v.get("type") in ("Trailer", "Teaser")]
+    if not ok:
+        return None
+    best = max(ok, key=score)
+    return {"key": best["key"], "hebrew": best.get("iso_639_1") == "he", "name": best.get("name")}
+
+
+def parse_extras(item: dict) -> dict:
+    recs = [r["id"] for r in (item.get("recommendations") or {}).get("results") or [] if r.get("id")]
+    recs += [r["id"] for r in (item.get("similar") or {}).get("results") or [] if r.get("id") and r["id"] not in recs]
+    nxt = item.get("next_episode_to_air") or {}
+    return {
+        "trailer": pick_trailer((item.get("videos") or {}).get("results") or []),
+        "related": recs,
+        "next": {"date": nxt.get("air_date"), "season": nxt.get("season_number"), "episode": nxt.get("episode_number"),
+                 "name": nxt.get("name") or None} if nxt.get("air_date") else None,
+        "status": item.get("status"),  # series: "Returning Series", "Ended", "Canceled"...
+    }
+
+
 class TMDB:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -159,6 +184,16 @@ class TMDB:
             out.append({"episode": e.get("episode_number"), "name": name or None, "overview": e.get("overview") or None,
                         "still": IMG + "w300" + e["still_path"] if e.get("still_path") else None})
         return [e for e in out if e["episode"] is not None]
+
+    async def extras(self, kind: str, tmdb_id: int) -> dict:
+        """For the title page, in ONE call: a trailer (Hebrew first, else English), recommended / similar titles
+        (TMDB ids) and, for a series, when its next episode airs."""
+        media_type = "tv" if kind == "series" else "movie"
+        async with self._client_ctx() as client:
+            item = await self._get(client, f"/{media_type}/{tmdb_id}", language="he-IL",
+                                   append_to_response="videos,recommendations,similar",
+                                   include_video_language="he,en,null")
+        return parse_extras(item)
 
     async def lookup(self, kind: str, name: str, year: int | None = None, tmdb_id: int | None = None,
                      have_overview: bool = False, duration: float | None = None, origin: str | None = None) -> dict | None:

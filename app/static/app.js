@@ -80,6 +80,7 @@ async function route() {
   window.scrollTo(0, 0);
   try {
     if (first === 'title') await pageTitle(+parts[1]);
+    else if (first === 'person') await pagePerson(decodeURIComponent(parts[1] || ''));
     else if (first === 'watch') await pageWatch(+parts[1]);
     else if (first === 'more' || first === 'settings') await pageSettings(parts[1]);
     else if (first === 'series') await pageList('series', st);
@@ -821,6 +822,63 @@ function posterCard(t) {
 let editMode = false;
 let editTitleId = null;  // the series/movie being edited
 
+// trailer, "עוד בסגנון הזה" and the next episode's date: loaded after the page shows, so it never waits for TMDB
+async function loadExtras(t, isSeries) {
+  let ex;
+  try { ex = await api(`/api/titles/${t.id}/extras`); } catch (_) { return; }
+  if (!document.body.contains($app.querySelector('#more-like')) || route.current !== `/title/${t.id}`) return;  // left the page
+  const tb = $app.querySelector('#trailer-btn');
+  if (ex.trailer && tb) {
+    tb.hidden = false;
+    if (ex.trailer.hebrew) tb.textContent = '🎬 צפה בטריילר (עברית)';
+    tb.onclick = () => trailerSheet(t.name, ex.trailer);
+  }
+  const ne = $app.querySelector('#next-ep');
+  if (ne && isSeries && (ex.next || ex.ended)) {
+    ne.hidden = false;
+    if (ex.next) {
+      const d = new Date(ex.next.date + 'T12:00:00');
+      const days = Math.round((d - new Date().setHours(12, 0, 0, 0)) / 86400000);
+      const when = days <= 0 ? 'היום' : days === 1 ? 'מחר'
+        : days < 7 ? `ביום ${d.toLocaleDateString('he-IL', {weekday: 'long'})}`
+        : d.toLocaleDateString('he-IL', {day: 'numeric', month: 'long', year: d.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined});
+      ne.innerHTML = `📅 <b>פרק ${ex.next.episode}</b>${ex.next.season ? ` (עונה ${ex.next.season})` : ''} ישודר <b>${esc(when)}</b>`;
+    } else ne.textContent = '🏁 הסדרה הסתיימה';
+  }
+  const ml = $app.querySelector('#more-like');
+  if (ml && ex.more.length) {
+    ml.innerHTML = rowSection('עוד בסגנון הזה', '', `<div class="hrow">${ex.more.map(posterCard).join('')}</div>`);
+  }
+}
+
+function trailerSheet(name, tr) {
+  const el = document.createElement('div');
+  el.className = 'sheet-wrap';
+  const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(tr.key)}?autoplay=1&rel=0&hl=he&cc_load_policy=1&cc_lang_pref=he`;
+  el.innerHTML = `<div class="sheet trailer-sheet"><div class="sheet-grip"></div>
+    <div class="sheet-head"><h3>${esc(name)} · טריילר</h3><button class="linkbtn" data-x>✕</button></div>
+    <div class="trailer-box"><iframe src="${src}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe></div>
+    <p class="sheet-note">${tr.hebrew ? 'טריילר בעברית.' : 'כתוביות בעברית יופיעו אם יש כאלה ביוטיוב. אין? פתח ביוטיוב והפעל ⚙ ← כתוביות ← תרגום אוטומטי ← עברית.'}
+      <a href="https://www.youtube.com/watch?v=${encodeURIComponent(tr.key)}" target="_blank" rel="noopener">פתח ביוטיוב ↗</a></p></div>`;
+  const hide = () => { el.classList.remove('open'); setTimeout(() => el.remove(), 200); };  // removing it stops the video
+  const release = sheetOpened(hide);
+  el.addEventListener('click', (e) => {
+    if (e.target === el || e.target.closest('[data-x]')) { hide(); release(); }
+  });
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('open'));
+}
+
+// an actor: everything of theirs in your library
+async function pagePerson(name) {
+  $app.innerHTML = '<div class="spinner"></div>';
+  const d = await api(`/api/person?name=${encodeURIComponent(name)}`);
+  $app.innerHTML = `<a class="backlink" href="javascript:history.back()">→ חזרה</a>
+    <div class="person-head"><div class="avatar big">${d.photo ? img(d.photo) : `<span>${esc((name || '?')[0])}</span>`}</div>
+      <div><h1>${esc(name)}</h1><div class="muted">${d.titles.length ? count(d.titles.length, 'כותר אחד בספרייה שלך', 'כותרים בספרייה שלך') : 'אין עוד כותרים שלו/ה בספרייה שלך'}</div></div></div>
+    <div class="pgrid">${d.titles.map(posterCard).join('')}</div>`;
+}
+
 async function pageTitle(id) {
   // re-draw after a change without jumping back to the top
   const reload = async () => { const y = window.scrollY; await pageTitle(id); window.scrollTo(0, y); };
@@ -866,15 +924,17 @@ async function pageTitle(id) {
             ${t.rating ? `<span class="chip-s gold">⭐ ${t.rating} TMDB</span>` : ''}
             ${isSeries ? `<span class="chip-s">${count(total, 'פרק אחד', 'פרקים')}</span>` : ''}
           </div>
+          <div class="next-ep" id="next-ep" hidden></div>
         </div>
       </div>
     </section>
     <div class="title-grid"><aside class="title-side">
     ${resume ? `<a class="btn primary wide" href="#/watch/${resume.media.id}">▶ ${esc(resumeLabel)}</a>` : ''}
     <button class="btn wide listbtn ${data.in_list ? 'on' : ''}" id="listbtn">${data.in_list ? '✓ ברשימה שלי' : '＋ לצפות בהמשך'}</button>
+    <button class="btn wide" id="trailer-btn" hidden>🎬 צפה בטריילר</button>
     ${t.overview ? `<p class="overview-text clamp" id="overview">${esc(t.overview)}</p>
       ${t.overview.length > 160 ? '<button class="linkbtn" id="more-overview">קרא עוד ▾</button>' : ''}` : ''}
-    ${cast.length ? `<div class="cast">${cast.map((c) => `<div class="castm"><div class="avatar">${c.photo ? img(c.photo) : `<span>${esc((c.name || '?')[0])}</span>`}</div><div class="cn">${esc(c.name)}</div></div>`).join('')}</div>` : ''}
+    ${cast.length ? `<div class="cast">${cast.map((c) => `<a class="castm" href="#/person/${encodeURIComponent(c.name)}"><div class="avatar">${c.photo ? img(c.photo) : `<span>${esc((c.name || '?')[0])}</span>`}</div><div class="cn">${esc(c.name)}</div></a>`).join('')}</div>` : ''}
     </aside><section class="title-main">
     ${editMode ? editTitlePanel(t) : ''}
     ${isSeries && seasons.length > 1 ? `<nav class="season-tabs">
@@ -882,7 +942,9 @@ async function pageTitle(id) {
       </nav>` : ''}
     ${isSeries ? '<div class="season-bar" id="season-bar"></div>' : ''}
     <div class="episodes" id="eps"></div>
+    <div id="more-like"></div>
     </section></div>`;
+  loadExtras(t, isSeries);
 
   $app.querySelector('#listbtn').onclick = async (e) => {
     const b = e.currentTarget, on = !b.classList.contains('on');
