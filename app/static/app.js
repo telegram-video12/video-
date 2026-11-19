@@ -62,6 +62,7 @@ async function route() {
   const prev = route.current;
   route.cameFrom = prev || null;
   if (prev && pageState[prev]) pageState[prev].scrollY = window.scrollY;
+  if (IS_TV && prev && pageState[prev]) pageState[prev].focus = document.activeElement?.getAttribute('href') || null;
   if (cleanup) { try { cleanup(); } catch (_) {} cleanup = null; }
   closeAllSheets();
   if (!(location.hash || '').startsWith(`#/title/${editTitleId}`)) editMode = false;  // edit mode ends when you leave
@@ -89,6 +90,10 @@ async function route() {
     else if (first === 'mylist') await pageMyList();
     else await pageHome();
     if (st.scrollY) requestAnimationFrame(() => window.scrollTo(0, st.scrollY));
+    if (IS_TV) setTimeout(() => {  // the remote needs something selected: where you were on this page, or its main thing
+      const back = st.focus && [...$app.querySelectorAll(`a[href="${CSS.escape(st.focus)}"]`)].find(tvVisible);
+      if (back) back.focus({preventScroll: true}); else tvAutoFocus(false);
+    }, 80);
     // a soft fade-and-rise for the new page (not when only the episode changes inside the player)
     if (!(first === 'watch' && prev && prev.startsWith('/watch/'))) {
       $app.classList.remove('page-in'); void $app.offsetWidth; $app.classList.add('page-in');
@@ -99,6 +104,145 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 window.addEventListener('hashchange', () => tvBarRender());
+
+// ---- TV mode: the site opened in a smart TV's browser, used with the TV's remote (arrows, OK, Back)
+const IS_TV = (() => {
+  try {
+    const q = new URLSearchParams(location.search).get('tv');
+    if (q === '1') localStorage.setItem('tvmode', '1');
+    if (q === '0') localStorage.removeItem('tvmode');
+    if (localStorage.getItem('tvmode') === '1') return true;
+  } catch (_) {}
+  return /SMART-TV|SmartTV|Tizen|Web0S|webOS|HbbTV|NetCast|BRAVIA|Android TV|AFTS|AFTM/i.test(navigator.userAgent);
+})();
+if (IS_TV) document.documentElement.classList.add('tv');
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type=hidden]), select, [tabindex]:not([tabindex="-1"])';
+function tvVisible(el) {
+  if (el.closest('[hidden]')) return false;
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  const cs = getComputedStyle(el);
+  return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.pointerEvents !== 'none';
+}
+function tvScope() {  // an open sheet keeps the focus inside it
+  const sheets = [...document.querySelectorAll('.sheet-wrap')];
+  return sheets[sheets.length - 1] || (location.hash.startsWith('#/watch/') ? document.querySelector('.player-wrap') : null) || document.body;
+}
+function tvMove(dir) {
+  const scope = tvScope();
+  const all = [...scope.querySelectorAll(FOCUSABLE)].filter(tvVisible);
+  const cur = document.activeElement;
+  if (!cur || cur === document.body || !scope.contains(cur) || !tvVisible(cur)) { tvAutoFocus(true); return; }
+  const a = cur.getBoundingClientRect();
+  const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
+  if (dir === 'up' || dir === 'down') {  // the nearest row above / below first, then the closest item in it
+    const cands = [];
+    for (const el of all) {
+      if (el === cur || el.contains(cur) || cur.contains(el)) continue;
+      const b = el.getBoundingClientRect();
+      const gap = dir === 'down' ? b.top - a.bottom : a.top - b.bottom;
+      const cy = b.top + b.height / 2;
+      if (gap < -8 || (dir === 'down' ? cy <= ay + 8 : cy >= ay - 8)) continue;
+      cands.push({el, gap: Math.max(0, gap), side: Math.abs(b.left + b.width / 2 - ax)});
+    }
+    if (!cands.length) return;
+    const near = Math.min(...cands.map((c) => c.gap));
+    const row = cands.filter((c) => c.gap <= near + 40).sort((x, y) => x.side - y.side);
+    tvFocus(row[0].el, true);
+    return;
+  }
+  let best = null, bestScore = Infinity;
+  for (const el of all) {
+    if (el === cur || el.contains(cur) || cur.contains(el)) continue;
+    const b = el.getBoundingClientRect();
+    const bx = b.left + b.width / 2, by = b.top + b.height / 2;
+    const dx = bx - ax, dy = by - ay;
+    let main, side;
+    // sideways = only within the same row (the top menu is reached with "up")
+    if ((dir === 'right' || dir === 'left') && (b.bottom <= a.top + 4 || b.top >= a.bottom - 4)) continue;
+    if (dir === 'right') { if (b.left < a.right - 8 && dx <= 8) continue; main = dx; side = Math.abs(dy); }
+    else if (dir === 'left') { if (b.right > a.left + 8 && dx >= -8) continue; main = -dx; side = Math.abs(dy); }
+    else if (dir === 'down') { if (b.top < a.bottom - 8 && dy <= 8) continue; main = dy; side = Math.abs(dx); }
+    else { if (b.bottom > a.top + 8 && dy >= -8) continue; main = -dy; side = Math.abs(dx); }
+    if (main <= 0) continue;
+    // stay in the same row / column: going sideways costs more than going further
+    const score = main + side * (dir === 'left' || dir === 'right' ? 4 : 1.5);
+    if (score < bestScore) { bestScore = score; best = el; }
+  }
+  if (best) tvFocus(best, dir === 'up' || dir === 'down');
+}
+function tvFocus(el, vertical) {
+  el.focus({preventScroll: true});
+  el.scrollIntoView({block: vertical ? 'center' : 'nearest', inline: 'nearest', behavior: 'smooth'});
+}
+function tvAutoFocus(force) {
+  if (!IS_TV) return;
+  // the player: nothing selected, so left/right jump 10 s and OK pauses ("up" shows the buttons)
+  if (location.hash.startsWith('#/watch/') && !document.querySelector('.sheet-wrap')) {
+    if (!force) { document.activeElement?.blur?.(); return; }
+    const pb = document.getElementById('playbtn');
+    if (pb) { pb.focus(); return; }
+  }
+  const scope = tvScope();
+  const cur = document.activeElement;
+  if (!force && cur && cur !== document.body && scope.contains(cur) && tvVisible(cur)) return;
+  let pick = null;
+  if (scope === document.body) {  // the page's main thing first: the slideshow, "watch" button, the first poster
+    for (const sel of ['.cf-card.on', '.cf-card', '.title-side .btn.primary', '.hero .btn.primary', '.poster-card', '.chip']) {
+      pick = [...$app.querySelectorAll(sel)].find(tvVisible);
+      if (pick) break;
+    }
+  }
+  pick = pick || [...(scope === document.body ? $app : scope).querySelectorAll(FOCUSABLE)].find(tvVisible);
+  if (pick && tvVisible(pick)) tvFocus(pick, true);
+}
+document.addEventListener('keydown', (e) => {
+  if (!IS_TV) return;
+  const k = e.key, code = e.keyCode;
+  const typing = e.target.matches && e.target.matches('input:not([type=checkbox]):not([type=range]), textarea');
+  const inPlayer = location.hash.startsWith('#/watch/');
+  // "Back" on the remote (Samsung 10009, LG 461) - or Backspace / Escape when not typing
+  if (code === 10009 || code === 461 || k === 'GoBack' || k === 'BrowserBack' || k === 'Escape' || (k === 'Backspace' && !typing)) {
+    e.preventDefault();
+    if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+    if (document.querySelector('.sheet-wrap') || route.cameFrom) history.back();
+    else if (location.hash && location.hash !== '#/') location.hash = '#/';  // never leave the site from its first page
+    return;
+  }
+  const v = inPlayer && document.getElementById('v');
+  if (v) {  // the remote's play / pause / fast-forward / rewind keys
+    if (k === 'MediaPlayPause' || code === 10252) { e.preventDefault(); v.paused ? v.play().catch(() => {}) : v.pause(); return; }
+    if (k === 'MediaPlay' || code === 415) { e.preventDefault(); v.play().catch(() => {}); return; }
+    if (k === 'MediaPause' || code === 19) { e.preventDefault(); v.pause(); return; }
+    if (k === 'MediaFastForward' || code === 417) { e.preventDefault(); v.currentTime += 30; return; }
+    if (k === 'MediaRewind' || code === 412) { e.preventDefault(); v.currentTime -= 30; return; }
+  }
+  const dir = {ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down'}[k];
+  if (!dir) return;
+  if (typing && (dir === 'left' || dir === 'right')) return;  // moving inside the text
+  if (inPlayer) {
+    const onControl = document.activeElement && document.activeElement.closest('.pl-bar, .pl-top, .tv-panel, .pl-pill');
+    if (!onControl) {  // watching: left/right jump 10 s (the player does it); up shows the buttons
+      if (dir === 'up') {
+        e.preventDefault(); e.stopImmediatePropagation();
+        document.querySelector('.player-wrap')?.dispatchEvent(new MouseEvent('mousemove', {bubbles: true}));
+        const pb = document.getElementById('playbtn');
+        if (pb) pb.focus();
+      } else if (dir === 'down') { e.preventDefault(); e.stopImmediatePropagation(); }
+      return;
+    }
+    if (dir === 'down' && document.activeElement.closest('.pl-bar')) {  // below the buttons: back to the picture
+      e.preventDefault(); e.stopImmediatePropagation();
+      document.activeElement.blur();
+      return;
+    }
+  }
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  tvMove(dir);
+  if (inPlayer) document.querySelector('.player-wrap')?.dispatchEvent(new MouseEvent('mousemove', {bubbles: true}));
+}, true);
 
 // ---- "playing on the TV": a remote on every page while a video plays on the TV (DLNA)
 const tvBar = {timer: null, info: null};
@@ -1690,7 +1834,7 @@ async function pageWatch(id) {
   const onKey = (e) => {
     if (e.target.matches('input:not([type=range]), textarea, select')) return;
     const k = e.key.toLowerCase();
-    if (k === ' ' || k === 'k') { e.preventDefault(); togglePlay(); }
+    if (k === ' ' || k === 'k' || (k === 'enter' && !e.target.closest('button, a, input, select'))) { e.preventDefault(); togglePlay(); }
     else if (k === 'arrowright') { e.preventDefault(); actions.fwd10(); }
     else if (k === 'arrowleft') { e.preventDefault(); actions.back10(); }
     else if (k === 'arrowup') { e.preventDefault(); v.muted = false; v.volume = Math.min(1, v.volume + 0.1); }
@@ -1896,7 +2040,7 @@ function telegramPanel(st) {
 }
 
 const SETTINGS_SECTIONS = [['sec-tg', '📡', 'חיבור לטלגרם'], ['sec-chats', '📋', 'קבוצות וערוצים'], ['sec-scan', '🔄', 'סריקה'],
-  ['sec-sync', '🔗', 'סנכרון מכשירים'], ['sec-dups', '👯', 'כפילויות אפשריות'], ['sec-hidden', '🙈', 'מוסתרים'], ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים ותקצירים'], ['sec-pw', '🔒', 'סיסמה ויציאה']];
+  ['sec-tvsite', '📺', 'צפייה בטלוויזיה'], ['sec-sync', '🔗', 'סנכרון מכשירים'], ['sec-dups', '👯', 'כפילויות אפשריות'], ['sec-hidden', '🙈', 'מוסתרים'], ['sec-clean', '🧹', 'ניקוי שמות'], ['sec-tmdb', '🖼', 'פוסטרים ותקצירים'], ['sec-pw', '🔒', 'סיסמה ויציאה']];
 
 async function pageSettings(section) {
   // phone: a menu of topics, each opens on its own screen (#/more/sec-…); computer: all topics with a side menu
@@ -1909,6 +2053,7 @@ async function pageSettings(section) {
     'sec-tg': auth ? `✓ מחובר${st.me?.name ? ' · ' + st.me.name : ''}` : 'לא מחובר',
     'sec-scan': st.scan?.running ? '⏳ סורק עכשיו' : '',
     'sec-sync': st.sync?.peer ? st.sync.peer : 'כבוי',
+    'sec-tvsite': !st.lan_needed || st.lan_access ? '✓ פתוח לטלוויזיה' : 'כבוי',
     'sec-dups': st.duplicates == null ? '' : !st.duplicates ? 'אין' : st.duplicates === 1 ? 'אחת לבדיקה' : `${n(st.duplicates)} לבדיקה`,
     'sec-tmdb': !st.tmdb ? 'לא מוגדר' : st.tmdb_status?.running ? `⏳ ${st.tmdb_status.done.toLocaleString('he-IL')} מתוך ${st.tmdb_status.total.toLocaleString('he-IL')}` : '✓ פעיל',
   };
@@ -1939,6 +2084,19 @@ async function pageSettings(section) {
         <label>פרק אחרון בעונה למשך <input type="number" min="1" max="60" id="nd-finale" value="${st.new_days?.finale ?? 30}"> ימים</label>
       </div>
       <button class="btn" id="nd-save" style="margin-top:8px">שמור</button>
+    </div>
+    <div class="panel" id="sec-tvsite"><h3>צפייה בטלוויזיה</h3>
+      <p class="muted" style="margin-top:0">פותחים את האתר בדפדפן של הטלוויזיה (סמסונג: אפליקציית <b>Internet</b>) ומדפדפים עם השלט: חיצים כדי לזוז, OK כדי לפתוח, "חזור" כדי לחזור. הטלוויזיה מנגנת בעצמה, בלי שיקוף מסך.</p>
+      ${st.lan_needed ? `<label class="chat-main" style="padding:10px 0"><input type="checkbox" id="lan-access" ${st.lan_access ? 'checked' : ''}>
+        <span style="flex:1"><b>אפשר כניסה מהטלוויזיה וממכשירים בבית</b><br><small class="muted">רק מה-Wi-Fi של הבית, ורק עם הסיסמה של האתר</small></span></label>` : ''}
+      ${st.lan_address ? `<div class="note" style="margin-top:10px">הכתובת שמקלידים בטלוויזיה:<br><b dir="ltr" style="font-size:20px">${esc(st.lan_address)}</b></div>`
+        : '<div class="note" style="margin-top:10px">המכשיר הזה לא מחובר עכשיו ל-Wi-Fi, ולכן אין כתובת לטלוויזיה.</div>'}
+      <ol class="muted" style="font-size:13px;line-height:1.7;padding-inline-start:18px">
+        <li>${st.lan_needed ? 'סמן למעלה "אפשר כניסה מהטלוויזיה".' : 'האתר במחשב הזה כבר פתוח למכשירים בבית.'}</li>
+        <li>בטלוויזיה: פתח את אפליקציית <b>Internet</b> והקלד את הכתובת.</li>
+        <li>הכנס את הסיסמה של האתר. מומלץ לשמור את הכתובת במועדפים של הטלוויזיה.</li>
+        <li>המכשיר הזה (${st.lan_needed ? 'הפלאפון' : 'המחשב'}) צריך להישאר דלוק עם האתר פועל כל זמן הצפייה.</li>
+      </ol>
     </div>
     <div class="panel" id="sec-sync"><h3>סנכרון בין מכשירים</h3>
       <p class="muted" style="margin-top:0">מעביר את ההתקדמות בצפייה בין הפלאפון למחשב, כשהם באותו Wi-Fi. בכל סרט ופרק נשמרת הצפייה האחרונה, לא משנה איפה צפית.</p>
@@ -2176,6 +2334,13 @@ async function pageSettings(section) {
   cleanup = () => clearInterval(poll);
   const doScan = async (full) => {
     try { renderScan(await api('/api/scan', {method: 'POST', body: {full}})); startPoll(); } catch (e) { alert(e.message); }
+  };
+  const lan = $('#lan-access');
+  if (lan) lan.onchange = async () => {
+    try {
+      await api('/api/settings', {method: 'POST', body: {lan_access: lan.checked}});
+      notice(lan.checked ? '✓ הטלוויזיה יכולה להיכנס עכשיו לאתר' : 'הכניסה מהטלוויזיה כבויה');
+    } catch (e) { lan.checked = !lan.checked; notice(e.message); }
   };
   $('#nd-save').onclick = async () => {
     const v = (id) => Number($('#nd-' + id).value);

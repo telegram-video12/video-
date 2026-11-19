@@ -82,12 +82,23 @@ def telegram_error_message(e: Exception) -> str:
     }.get(name, str(e) or name)
 
 
+def home_network(ip: str) -> bool:
+    """An address inside the home network (192.168.x.x, 10.x.x.x ...), never one from the internet."""
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return a.is_private and not a.is_loopback
+
+
 class AuthMiddleware:
     """Pure ASGI middleware (keeps video streaming efficient)."""
 
-    def __init__(self, app, settings: Settings, valid_token, valid_cast=None, on_change=None):
+    def __init__(self, app, settings: Settings, valid_token, valid_cast=None, on_change=None, lan_ok=None):
         self.app, self.settings, self.valid_token, self.valid_cast = app, settings, valid_token, valid_cast
         self.on_change = on_change
+        self.lan_ok = lan_ok  # Settings: "let the TV / other devices at home open the site" (with the password)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -96,7 +107,8 @@ class AuthMiddleware:
         cast_ok = (path.startswith("/api/stream/") and self.valid_cast
                    and self.valid_cast(path, Request(scope).query_params.get("t")))
         client = (scope.get("client") or ("127.0.0.1", 0))[0]
-        if os.getenv("LOCAL_ONLY") == "1" and not cast_ok and client not in ("127.0.0.1", "::1", "localhost"):
+        if (os.getenv("LOCAL_ONLY") == "1" and not cast_ok and client not in ("127.0.0.1", "::1", "localhost")
+                and not (self.lan_ok and self.lan_ok() and home_network(client))):
             # the phone: nobody else on the Wi-Fi may open the site, only a TV playing a video you sent it
             return await JSONResponse({"detail": "forbidden"}, status_code=403)(scope, receive, send)
         if cast_ok:
@@ -1166,6 +1178,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "chats": db.chats(),
             "scan_interval_minutes": settings.scan_interval_minutes,
             "new_days": new_days(),
+            # open the site on the TV's browser: allowed? and the address to type there
+            "lan_access": db.get_pref("lan_access") == "1",
+            "lan_address": f"http://{ip}:{request.url.port or os.getenv('PORT', '8000')}" if (ip := lan_ip()) else None,
+            "lan_needed": os.getenv("LOCAL_ONLY") == "1",
             "strip_phrases": db.strip_phrases(),
             "duplicates": None if (d := possible_duplicates(db, wait=False)) is None else len(d),
             "sync": {
@@ -1187,6 +1203,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if key:  # look up titles that were added before the key existed
                 db.x("UPDATE titles SET tmdb_checked = 0 WHERE tmdb_id IS NULL")
                 scanner.start_tmdb()
+        if "lan_access" in payload:
+            db.set_pref("lan_access", "1" if payload["lan_access"] else "0")
         if isinstance(payload.get("new_days"), dict):
             for k in NEW_DAYS_DEFAULT:
                 v = payload["new_days"].get(k)
@@ -1486,7 +1504,8 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
     ]
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={ApiError: api_error, Exception: server_error})
     app.add_middleware(AuthMiddleware, settings=settings, valid_token=valid_token, valid_cast=valid_cast,
-                       on_change=lambda: setattr(db, "wants_fresh", True))
+                       on_change=lambda: setattr(db, "wants_fresh", True),
+                       lan_ok=lambda: db.get_pref("lan_access") == "1")
     app.state.db, app.state.tg, app.state.scanner, app.state.settings = db, tg, scanner, settings
     app.state.startup_finished = startup_finished
     return app

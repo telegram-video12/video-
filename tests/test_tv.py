@@ -91,3 +91,34 @@ def test_play_on_tv_end_to_end(client, monkeypatch):
         assert media["position"] >= 100  # where the TV got to is saved
     finally:
         srv.shutdown()
+
+
+def test_tv_may_open_the_site_only_when_allowed(tmp_path, monkeypatch):
+    from starlette.testclient import TestClient
+
+    from app.config import Settings
+    from app.main import create_app, home_network
+    from test_api import FakeTG
+
+    assert home_network("192.168.1.30") and home_network("10.0.0.7")
+    assert not home_network("8.8.8.8") and not home_network("127.0.0.1") and not home_network("testclient")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SITE_PASSWORD", "")
+    monkeypatch.setenv("SCAN_INTERVAL_MINUTES", "0")
+    monkeypatch.setenv("LOCAL_ONLY", "1")  # the phone
+    app = create_app(Settings(), tg=FakeTG())
+    with TestClient(app, client=("127.0.0.1", 5000)) as phone, TestClient(app, client=("192.168.1.30", 5000)) as tv, \
+            TestClient(app, client=("8.8.8.8", 5000)) as outsider:
+        app.state.startup_finished.wait(15)
+        phone.post("/api/setup", json={"password": "secret"})
+        assert tv.get("/login").status_code == 403  # off: the TV gets nothing
+        st = phone.get("/api/status").json()
+        assert st["lan_needed"] is True and st["lan_access"] is False
+        phone.post("/api/settings", json={"lan_access": True})
+        assert tv.get("/login").status_code == 200
+        assert tv.get("/api/library").status_code == 401  # ...but only with the password
+        assert tv.post("/api/login", json={"password": "secret"}).status_code == 200
+        assert tv.get("/api/library").status_code == 200
+        assert outsider.get("/login").status_code == 403  # never from the internet
+        phone.post("/api/settings", json={"lan_access": False})
+        assert tv.get("/api/library").status_code == 403

@@ -857,3 +857,19 @@ a.castm:hover .cn { color: var(--gold); }
 #tvbar .tvb-btns .tvb-pp { background: var(--grad); color: var(--ink); }
 body.has-tvbar main { padding-bottom: calc(var(--tabbar-h) + 110px + env(safe-area-inset-bottom)); }
 @media (min-width: 1000px) { #tvbar { bottom: 18px; } }
+
+/* TV mode: the site in a smart TV's browser, moved around with the remote */
+html.tv :focus { outline: none; }
+html.tv a:focus-visible, html.tv button:focus-visible, html.tv input:focus-visible, html.tv select:focus-visible,
+html.tv a:focus, html.tv button:focus, html.tv input:focus, html.tv select:focus {
+  outline: 4px solid var(--gold); outline-offset: 3px; border-radius: 10px; }
+html.tv .poster-card { transition: transform .15s ease; }
+html.tv .poster-card:focus { outline: none; transform: scale(1.07); z-index: 2; position: relative; }
+html.tv .poster-card:focus .poster { box-shadow: 0 0 0 4px var(--gold), 0 12px 30px rgba(0,0,0,.6); }
+html.tv .cf-card:focus { outline: none; box-shadow: 0 0 0 5px var(--gold); }
+html.tv .rowarrow { display: none !important; }  /* the remote scrolls the rows itself */
+html.tv .hrow { scroll-padding-inline: 40px; }
+html.tv .pl-btn:focus { background: rgba(22, 217, 197, .25); }
+html.tv body { zoom: 1.25; }  /* read from the couch */
+html.tv .hrow { padding-block: 14px; }
+html.tv .rsec-head a { display: none; }  /* row headers: the top menu already leads to the full lists */
