@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -131,6 +132,9 @@ class Database:
         self.version = 0  # bumped on every write; used to cache the library listing
         self.soft_version = 0  # background poster/overview updates: refresh the cache at most every 20s
         self._titles_cache: tuple[int, int, float, list[dict]] | None = None
+        self._build_lock = threading.Lock()
+        self._refreshing = False
+        self.soft_refresh_seconds = 10  # 60 while TMDB updates the whole library in the background
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA synchronous = NORMAL")  # safe with WAL, and much faster saving on Windows
@@ -444,35 +448,64 @@ class Database:
         )
 
     def library_titles(self) -> list[dict]:
-        """Cached list_titles(): recomputed only after something changed."""
+        """Cached list of everything in the library, recomputed after something changed.
+        Your own changes (a new version) are waited for; background updates (TMDB posters / dates, a scan)
+        only refresh it in the background: until then the previous list is served at once, so no page waits."""
         c = self._titles_cache
-        if (not c or c[0] != self.version
-                or (c[1] != self.soft_version and time.time() - c[2] > 10)):
-            from .parser import normalize, skeleton
+        if c and c[0] == self.version:
+            if c[1] != self.soft_version and time.time() - c[2] > self.soft_refresh_seconds:
+                self._refresh_titles_soon()
+            return c[3]
+        with self._build_lock:  # one build at a time; who waited gets the list the other one built
+            c = self._titles_cache
+            if not c or c[0] != self.version:
+                self._build_titles()
+            return self._titles_cache[3]
 
-            rows = self.list_titles()
-            fresh = self.new_episodes()
-            mark_sequels(rows)
-            has_latest = self.have_latest_episode(time.time() - 61 * 86400)
-            for t in rows:
-                if t["kind"] == "series" and t["id"] not in has_latest:
-                    t["avail_at"] = None  # the newest episode TMDB knows is not on the site yet: nothing new to watch
-                t["new_count"], t["new_at"] = fresh.get(t["id"], (0, None))  # search keys and parsed genres, computed once per change
-                t["_key"] = normalize(t["name"] or "")
-                t["_okey"] = normalize(t["original_name"] or "")
-                t["_skel"] = skeleton(t["_key"])
-                try:
-                    t["genres"] = json.loads(t["genres"] or "[]")
-                except ValueError:
-                    t["genres"] = []
-                # "ישראלי" as a genre: by TMDB (made in Israel / Hebrew) when it knows; otherwise an Israeli
-                # group/caption or a Hebrew original name. (A caption saying "yes"/"HOT" = only SHOWN in Israel.)
-                il = t["made_in_il"] if t.get("made_in_il") is not None else (
-                    t.get("origin") == "il" or HEBREW.search(t["original_name"] or ""))
-                if il and "ישראלי" not in t["genres"]:
-                    t["genres"].append("ישראלי")
-            self._titles_cache = c = (self.version, self.soft_version, time.time(), rows)
-        return c[3]
+    def _refresh_titles_soon(self) -> None:
+        if self._refreshing:
+            return
+        self._refreshing = True
+
+        def run() -> None:
+            try:
+                with self._build_lock:
+                    c = self._titles_cache
+                    if c and (c[0], c[1]) != (self.version, self.soft_version):
+                        self._build_titles()
+            except Exception:  # noqa: BLE001 - the next request tries again
+                logging.getLogger(__name__).exception("refreshing the library list failed")
+            finally:
+                self._refreshing = False
+        threading.Thread(target=run, daemon=True).start()
+
+    def _build_titles(self) -> None:
+        from .parser import normalize, skeleton
+
+        version, soft = self.version, self.soft_version  # changes made while building make it stale again
+
+        rows = self.list_titles()
+        fresh = self.new_episodes()
+        mark_sequels(rows)
+        has_latest = self.have_latest_episode(time.time() - 61 * 86400)
+        for t in rows:
+            if t["kind"] == "series" and t["id"] not in has_latest:
+                t["avail_at"] = None  # the newest episode TMDB knows is not on the site yet: nothing new to watch
+            t["new_count"], t["new_at"] = fresh.get(t["id"], (0, None))  # search keys and parsed genres, computed once per change
+            t["_key"] = normalize(t["name"] or "")
+            t["_okey"] = normalize(t["original_name"] or "")
+            t["_skel"] = skeleton(t["_key"])
+            try:
+                t["genres"] = json.loads(t["genres"] or "[]")
+            except ValueError:
+                t["genres"] = []
+            # "ישראלי" as a genre: by TMDB (made in Israel / Hebrew) when it knows; otherwise an Israeli
+            # group/caption or a Hebrew original name. (A caption saying "yes"/"HOT" = only SHOWN in Israel.)
+            il = t["made_in_il"] if t.get("made_in_il") is not None else (
+                t.get("origin") == "il" or HEBREW.search(t["original_name"] or ""))
+            if il and "ישראלי" not in t["genres"]:
+                t["genres"].append("ישראלי")
+        self._titles_cache = (version, soft, time.time(), rows)
 
     def have_latest_episode(self, since: float) -> set[int]:
         """Series that aired an episode lately (by TMDB) AND have that episode (or a later one) on the site."""

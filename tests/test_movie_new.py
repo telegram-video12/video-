@@ -139,3 +139,19 @@ def test_israeli_genre_by_tmdb(tmp_path):
     db.update_title(c, origin="il")  # TMDB does not know it: the group/caption decides
     g = {t["id"]: "ישראלי" in t["genres"] for t in db.library_titles()}
     assert g == {a: False, b: True, c: True}
+
+
+def test_library_list_refreshes_in_the_background(tmp_path):
+    db = Database(tmp_path / "w.db")
+    a, _ = _movie(db, "ראשון", 2001, 0, 1)
+    assert db.library_titles()[0]["name"] == "ראשון"
+    db.update_title(a, soft=True, poster="p.jpg")  # a background update (TMDB): served from the old list at once
+    db.soft_refresh_seconds = 0
+    assert db.library_titles()[0]["poster"] is None
+    for _ in range(100):  # ... and refreshed in the background
+        if db.library_titles()[0]["poster"] == "p.jpg":
+            break
+        time.sleep(0.02)
+    assert db.library_titles()[0]["poster"] == "p.jpg"
+    db.update_title(a, name="שונה")  # your own change: right away
+    assert db.library_titles()[0]["name"] == "שונה"

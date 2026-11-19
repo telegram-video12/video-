@@ -358,6 +358,8 @@ class TMDB:
                 self.status["waiting"] = False
                 self.status["done"] += 1
 
+        if len(pending) > 50:  # a big background run: refresh the library list once a minute, not every 10 s
+            db.soft_refresh_seconds = 60
         try:
             async with httpx.AsyncClient() as client:
                 self._client = client
@@ -368,3 +370,4 @@ class TMDB:
         finally:
             self._client = None
             self.status["running"] = False
+            db.soft_refresh_seconds = 10

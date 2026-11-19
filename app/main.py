@@ -292,6 +292,10 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "ep_still": m.get("ep_still"),
         }
 
+    async def titles() -> list[dict]:
+        """The library list, built in a worker thread: the site keeps answering (posters, video) meanwhile."""
+        return await asyncio.to_thread(db.library_titles)
+
     async def library(request: Request):
         """Paged library: ?kind=all|series|movie&q=search&offset=0&limit=60"""
         qp = request.query_params
@@ -307,7 +311,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         q = normalize(raw_q)
         offset = max(0, int(qp.get("offset", 0) or 0))
         limit = min(200, max(1, int(qp.get("limit", 60) or 60)))
-        items = db.library_titles()
+        items = await titles()
         # how many series / movies the whole site has (before any search or filter)
         site_counts = {"series": sum(1 for t in items if t["kind"] == "series")}
         site_counts["movie"] = len(items) - site_counts["series"]
@@ -362,7 +366,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if q and offset == 0 and len(raw_q) >= 2 and qp.get("files") == "1":
             # also: videos whose TELEGRAM text has these words but that sit under another name on the site
             shown = {t["id"] for t in items}
-            by_id = {t["id"]: t for t in db.library_titles()}
+            by_id = {t["id"]: t for t in await titles()}
             extra = [by_id[i] for i in db.titles_by_caption(raw_q) if i in by_id and i not in shown
                      and (kind not in ("series", "movie") or by_id[i]["kind"] == kind)]
             out["by_file"] = [card(t) for t in extra[:30]]
@@ -415,7 +419,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
     async def home_rows(request: Request):
         """Home page extras: new episodes of what you watch, and rows of the genres you watch most."""
-        items = db.library_titles()
+        items = await titles()
         # "✨ חדש בשבילך": new episodes of series you watch, the next movie of movie series you watched,
         # then everything new by TMDB (a series' new episode, a new movie), newest first
         days, now = new_days(), time.time()
@@ -501,6 +505,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
     async def my_list(request: Request):
         """My list page: saved for later, what you watched, and how much."""
+        await titles()  # (re)built off the main thread; watchlist_cards() then uses it
         history = [{
             "media_id": h["media_id"], "title_id": h["title_id"], "name": h["name"], "kind": h["kind"],
             "season": h["season"], "episode": h["episode"], "position": h["position"],
@@ -511,7 +516,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
     async def duplicates(request: Request):
         """Titles that look like the same movie/series with extra words, for you to decide."""
-        pairs = possible_duplicates(db)
+        pairs = await asyncio.to_thread(possible_duplicates, db)
         return ok({"pairs": pairs[:300], "total": len(pairs)})
 
     async def duplicates_dismiss(request: Request):
@@ -560,7 +565,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
 
         qp = request.query_params
         kind, skip = qp.get("kind", ""), qp.get("not", "")
-        items = [t for t in db.library_titles()
+        items = [t for t in await titles()
                  if not t["watched_count"] and not t["last_watched"]
                  and (kind not in ("series", "movie") or t["kind"] == kind) and str(t["id"]) != skip]
         nice = [t for t in items if t["poster"] and t["overview"]]  # ones with a picture and a story first
@@ -573,7 +578,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         """Genres in the library with how many titles have each: ?kind=series|movie"""
         kind = request.query_params.get("kind", "")
         counts: dict[str, int] = {}
-        for t in db.library_titles():
+        for t in await titles():
             if kind in ("series", "movie") and t["kind"] != kind:
                 continue
             for g in t["genres"]:
@@ -654,7 +659,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                 except Exception as e:  # noqa: BLE001 - no internet / TMDB slow: the page works without these
                     log.info("TMDB extras failed for %s: %s", title_id, type(e).__name__)
         ex = ex or {}
-        items = db.library_titles()
+        items = await titles()
         by_tmdb = {x["tmdb_id"]: x for x in (db.q("SELECT id, tmdb_id FROM titles WHERE kind = ? AND tmdb_id IS NOT NULL",
                                                     (t["kind"],)))}
         by_id = {x["id"]: x for x in items}
@@ -685,7 +690,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         name = (request.query_params.get("name") or "").strip()
         if not name:
             raise ApiError(400)
-        by_id = {x["id"]: x for x in db.library_titles()}
+        by_id = {x["id"]: x for x in await titles()}
         photo, found = None, []
         for r in db.q("SELECT id, cast_json FROM titles WHERE cast_json LIKE ?", (f"%{name}%",)):
             try:
@@ -1041,7 +1046,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "scan_interval_minutes": settings.scan_interval_minutes,
             "new_days": new_days(),
             "strip_phrases": db.strip_phrases(),
-            "duplicates": len(possible_duplicates(db)),
+            "duplicates": len(await asyncio.to_thread(possible_duplicates, db)),
             "sync": {
                 "peer": db.get_pref("sync_peer"),
                 "this_device": this_device_address(),
