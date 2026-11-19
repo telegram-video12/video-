@@ -122,3 +122,13 @@ def test_tv_may_open_the_site_only_when_allowed(tmp_path, monkeypatch):
         assert outsider.get("/login").status_code == 403  # never from the internet
         phone.post("/api/settings", json={"lan_access": False})
         assert tv.get("/api/library").status_code == 403
+
+
+def test_tv_browser_player_gets_a_video_key(client):
+    login(client)
+    scan(client)
+    mid = client.get("/api/library").json()["titles"][0]["first_media_id"]
+    key = client.get(f"/api/media/{mid}").json()["stream_key"]
+    client.cookies.clear()  # the TV's own player sends no login
+    assert client.get(f"/api/stream/{mid}").status_code == 401
+    assert client.get(f"/api/stream/{mid}?t={key}", headers={"Range": "bytes=0-9"}).status_code == 206

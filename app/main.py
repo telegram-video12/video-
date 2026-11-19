@@ -127,6 +127,8 @@ class AuthMiddleware:
                 await inner(message)
         request = Request(scope)
         if self.settings.needs_setup or not self.valid_token(request.cookies.get(COOKIE)):
+            if path.startswith("/api/stream/"):
+                log.warning("video refused for %s: not logged in and no valid video key", client)
             if path.startswith("/api/"):
                 resp = JSONResponse({"detail": "login required"}, status_code=401)
             else:
@@ -837,6 +839,9 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
                     if ip else None)
         return ok({
             "cast_url": cast_url,
+            # a TV's browser hands the video to the TV's own player, which does not send the login cookie:
+            # in TV mode the player asks for the video with this one-video key instead
+            "stream_key": cast_token(m["id"]),
             "media": media_out(with_names(dict(m), info)),
             "title": t,
             "prev": media_out(with_names(dict(prev), info)) if prev else None,
