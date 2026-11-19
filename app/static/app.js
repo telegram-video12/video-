@@ -1386,7 +1386,8 @@ async function pageWatch(id) {
   $app.innerHTML = '<div class="spinner"></div>';
   const {media: m, title: t, prev, next, versions, cast_url: castUrl, stream_key: streamKey} = await api(`/api/media/${id}`);
   // on a TV the browser hands the video to the TV's own player, which has no login: give it the video's key
-  const src = IS_TV && streamKey ? `/api/stream/${m.id}?t=${encodeURIComponent(streamKey)}` : `/api/stream/${m.id}`;
+  const fromOtherDevice = !['localhost', '127.0.0.1', '::1', '[::1]'].includes(location.hostname);
+  const src = (IS_TV || fromOtherDevice) && streamKey ? `/api/stream/${m.id}?t=${encodeURIComponent(streamKey)}` : `/api/stream/${m.id}`;
   const isSeries = t.kind === 'series' && m.episode != null;
   document.title = `${t.name}${isSeries ? ' · ' + epLabel(m) : ''}`;
   const sub = isSeries ? epLong(m) + (m.ep_name ? ' · ' + m.ep_name : '') : '';
@@ -1710,7 +1711,7 @@ async function pageWatch(id) {
     if (next) showNextOverlay();
   });
   v.addEventListener('error', async () => {
-    if (v.src.includes('?t=') && !IS_TV) return;  // the TV link: handled by the cast code
+    if (v.src.includes('?t=') && !IS_TV && !fromOtherDevice) return;  // the TV link: handled by the cast code
     const code = v.error && v.error.code;
     // first: is the video still on Telegram? if not, another upload of it may work (another group)
     let check = null;
