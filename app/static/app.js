@@ -98,6 +98,58 @@ async function route() {
   }
 }
 window.addEventListener('hashchange', route);
+window.addEventListener('hashchange', () => tvBarRender());
+
+// ---- "playing on the TV": a remote on every page while a video plays on the TV (DLNA)
+const tvBar = {timer: null, info: null};
+function tvBarRender() {
+  const info = tvBar.info;
+  let el = document.getElementById('tvbar');
+  // the player of that same video has its own big remote
+  const inPlayer = info && location.hash === `#/watch/${info.media_id}`;
+  if (!info || !info.active || inPlayer) { if (el) el.hidden = true; document.body.classList.toggle('has-tvbar', false); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'tvbar';
+    el.innerHTML = `<button class="tvb-info" data-tvb="open"><span class="tvb-ic">📺</span>
+        <span class="tvb-txt"><b></b><small></small></span></button>
+      <div class="tvb-btns"><button data-tvb="back" aria-label="10 שניות אחורה">⟲</button>
+        <button data-tvb="pp" class="tvb-pp" aria-label="השהה / המשך">⏸</button>
+        <button data-tvb="fwd" aria-label="10 שניות קדימה">⟳</button>
+        <button data-tvb="stop" aria-label="עצור את השידור">⏹</button></div>`;
+    el.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-tvb]');
+      if (!b || !tvBar.info) return;
+      const a = b.dataset.tvb;
+      if (a === 'open') { location.hash = `#/watch/${tvBar.info.media_id}`; return; }
+      if (a === 'stop' && !confirm('לעצור את השידור בטלוויזיה?')) return;
+      const body = a === 'back' ? {action: 'seek', delta: -10} : a === 'fwd' ? {action: 'seek', delta: 10}
+        : a === 'pp' ? {action: tvBar.info.state === 'PLAYING' ? 'pause' : 'play'} : {action: 'stop'};
+      try {
+        const r = await api('/api/tv/control', {method: 'POST', body});
+        tvBar.info = a === 'stop' ? null : {...tvBar.info, ...r};
+        tvBarRender();
+      } catch (err) { alert(err.message); }
+    });
+    document.body.appendChild(el);
+  }
+  el.hidden = false;
+  document.body.classList.add('has-tvbar');
+  el.querySelector('.tvb-txt b').textContent = info.title || 'מנגן בטלוויזיה';
+  el.querySelector('.tvb-txt small').innerHTML =
+    `<bdi dir="ltr">${fmtTime(info.position || 0)}${info.duration ? ' / ' + fmtTime(info.duration) : ''}</bdi> · <bdi>${esc(info.device)}</bdi>`;
+  el.querySelector('.tvb-pp').textContent = info.state === 'PLAYING' ? '⏸' : '▶';
+}
+async function tvBarPoll() {
+  const r = await api('/api/tv/status').catch(() => null);
+  tvBar.info = r && r.active ? r : null;
+  tvBarRender();
+  if (!tvBar.info && tvBar.timer) { clearInterval(tvBar.timer); tvBar.timer = null; }
+}
+function tvBarStart() {
+  if (!tvBar.timer) tvBar.timer = setInterval(tvBarPoll, 3000);
+  tvBarPoll();
+}
 // tapping the tab you are already on scrolls back to the top
 $tabbar.addEventListener('click', (e) => {
   const a = e.target.closest('a');
@@ -1739,6 +1791,7 @@ async function pageWatch(id) {
         close();
         tvPanel(r);
         tvFollow();
+        tvBarStart();  // the remote stays on the other pages too
       } catch (err) {
         list.innerHTML = `<p class="sheet-note">${esc(err.message)}</p><button class="btn wide" data-again>🔄 חפש שוב</button>`;
       }
@@ -2193,3 +2246,4 @@ async function pageSettings(section) {
 }
 
 route();
+tvBarStart();  // a video may already be playing on the TV (e.g. the page was reloaded)

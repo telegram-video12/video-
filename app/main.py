@@ -972,7 +972,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         if not p:
             return {"active": False}
         return {"active": p.state not in ("STOPPED", "NO_MEDIA_PRESENT", "lost"), "state": p.state,
-                "device": p.device["name"], "media_id": p.media_id, "position": p.position,
+                "device": p.device["name"], "media_id": p.media_id, "title": p.title, "position": p.position,
                 "duration": p.duration, "error": p.error}
 
     async def tv_status(request: Request):

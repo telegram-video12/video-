@@ -839,3 +839,21 @@ a.castm:hover .cn { color: var(--gold); }
 .tv-panel .tv-row .pl-btn { width: 54px; height: 54px; font-size: 24px; border-radius: 50%; background: rgba(255,255,255,.08); }
 .tv-panel .tv-pp { background: var(--grad) !important; color: var(--ink); }
 .tv-list .sheet-opt { justify-content: flex-start; gap: 8px; }
+
+/* a remote on every page while a video plays on the TV */
+#tvbar { position: fixed; z-index: 60; left: var(--gutter); right: var(--gutter);
+  bottom: calc(var(--tabbar-h) + 10px + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px; border-radius: 14px; background: #0d1d26; border: 1px solid rgba(22, 217, 197, .35);
+  box-shadow: 0 10px 30px rgba(0,0,0,.5); max-width: 640px; margin: 0 auto; }
+#tvbar[hidden] { display: none; }
+#tvbar button { background: none; border: 0; color: inherit; cursor: pointer; font: inherit; }
+#tvbar .tvb-info { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: right; padding: 0; }
+#tvbar .tvb-ic { font-size: 22px; }
+#tvbar .tvb-txt { min-width: 0; display: flex; flex-direction: column; }
+#tvbar .tvb-txt b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+#tvbar .tvb-txt small { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tvbar .tvb-btns { display: flex; gap: 2px; }
+#tvbar .tvb-btns button { width: 40px; height: 40px; border-radius: 50%; font-size: 18px; }
+#tvbar .tvb-btns .tvb-pp { background: var(--grad); color: var(--ink); }
+body.has-tvbar main { padding-bottom: calc(var(--tabbar-h) + 110px + env(safe-area-inset-bottom)); }
+@media (min-width: 1000px) { #tvbar { bottom: 18px; } }
