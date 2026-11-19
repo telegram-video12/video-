@@ -89,6 +89,7 @@ def client(tmp_path, monkeypatch):
     app = create_app(Settings(), tg=FakeTG())
     app.state.db.always_fresh = True  # the site serves the previous library list while rebuilding; tests wait
     with TestClient(app) as c:
+        app.state.startup_finished.wait(15)  # the site's own start-up jobs and scan are done before the test
         yield c
 
 

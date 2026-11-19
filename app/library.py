@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import logging
 import time
 
@@ -159,7 +160,8 @@ def regroup_chat(db: Database, chat_id: int, corpus: list | None = None, force: 
 
 # ------------------------------------------------------------ same title, extra words
 def _title_rows(db: Database) -> list[dict]:
-    rows = db.q("""SELECT t.id, t.kind, t.name, t.year, t.tmdb_id, t.poster,
+    # its own connection: the site does not wait for this big read
+    rows = db._reader_q("""SELECT t.id, t.kind, t.name, t.year, t.tmdb_id, t.poster,
                           MAX(m.duration) AS duration, MAX(m.manual) AS manual, COUNT(m.id) AS files
                    FROM titles t JOIN media m ON m.title_id = t.id AND m.hidden = 0 GROUP BY t.id""")
     for r in rows:
@@ -321,16 +323,49 @@ def merge_similar_movies(db: Database) -> int:
     return merged
 
 
-def possible_duplicates(db: Database) -> list[dict]:
+DUPS_REFRESH_SECONDS = 300
+
+
+def possible_duplicates(db: Database, wait: bool = True) -> list[dict] | None:
     """What is left for you to decide: looks like the same title but was not joined automatically.
-    Remembered until the library changes (Settings asks for the count often)."""
-    stamp = (db.version, db.soft_version, db.get_pref("dup_dismissed"))
-    cached = getattr(db, "_dups_cache", None)
-    if cached and cached[0] == stamp:
-        return cached[1]
-    out = _possible_duplicates(db)
-    db._dups_cache = (stamp, out)
-    return out
+    Working this out takes seconds on a phone, so after library changes the last answer is kept and a new one is
+    worked out in the background at most every 5 minutes; after you dismiss one, it is worked out again at once.
+    wait=False: never work it out here (None = not known yet)."""
+    dismissed = db.get_pref("dup_dismissed")
+    cached = getattr(db, "_dups_cache", None)  # (version, dismissed, when, list)
+    if cached and cached[1] == dismissed and not (db.always_fresh and cached[0] != db.version):
+        if cached[0] != db.version and time.time() - cached[2] > DUPS_REFRESH_SECONDS:
+            _dups_in_background(db)
+        return cached[3]
+    if not wait:
+        _dups_in_background(db)
+        return cached[3] if cached else None
+    with _dups_lock:
+        cached = getattr(db, "_dups_cache", None)
+        if not cached or cached[1] != dismissed or (db.always_fresh and cached[0] != db.version):
+            version = db.version
+            db._dups_cache = cached = (version, dismissed, time.time(), _possible_duplicates(db))
+    return cached[3]
+
+
+_dups_lock = threading.Lock()
+
+
+def _dups_in_background(db: Database) -> None:
+    if getattr(db, "_dups_running", False):
+        return
+    db._dups_running = True
+
+    def run() -> None:
+        try:
+            with _dups_lock:
+                dismissed, version = db.get_pref("dup_dismissed"), db.version
+                db._dups_cache = (version, dismissed, time.time(), _possible_duplicates(db))
+        except Exception:  # noqa: BLE001
+            log.exception("working out possible duplicates failed")
+        finally:
+            db._dups_running = False
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _possible_duplicates(db: Database) -> list[dict]:

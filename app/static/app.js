@@ -1755,7 +1755,7 @@ async function pageSettings(section) {
     'sec-tg': auth ? `✓ מחובר${st.me?.name ? ' · ' + st.me.name : ''}` : 'לא מחובר',
     'sec-scan': st.scan?.running ? '⏳ סורק עכשיו' : '',
     'sec-sync': st.sync?.peer ? st.sync.peer : 'כבוי',
-    'sec-dups': !st.duplicates ? 'אין' : st.duplicates === 1 ? 'אחת לבדיקה' : `${n(st.duplicates)} לבדיקה`,
+    'sec-dups': st.duplicates == null ? '' : !st.duplicates ? 'אין' : st.duplicates === 1 ? 'אחת לבדיקה' : `${n(st.duplicates)} לבדיקה`,
     'sec-tmdb': !st.tmdb ? 'לא מוגדר' : st.tmdb_status?.running ? `⏳ ${st.tmdb_status.done.toLocaleString('he-IL')} מתוך ${st.tmdb_status.total.toLocaleString('he-IL')}` : '✓ פעיל',
   };
 

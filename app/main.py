@@ -13,6 +13,7 @@ import json
 import hmac
 import logging
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -955,11 +956,19 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
 
     # -------------------------------------------------------------- settings
+    me_cache: dict = {}
+
     async def safe_me():
+        """Your Telegram name for Settings; asked again only every 10 minutes (Settings asks often)."""
         if not tg.authorized:
             return None
+        hit = me_cache.get("v")
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
         try:
-            return await asyncio.wait_for(tg.me(), 10)
+            me = await asyncio.wait_for(tg.me(), 10)
+            me_cache["v"] = (time.time(), me)
+            return me
         except Exception as e:  # noqa: BLE001 - e.g. the phone switched networks; Telethon reconnects
             log.warning("could not reach Telegram: %s", e)
             return {"name": "(אין חיבור כרגע, מתחבר מחדש...)", "username": None}
@@ -1052,7 +1061,7 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             "scan_interval_minutes": settings.scan_interval_minutes,
             "new_days": new_days(),
             "strip_phrases": db.strip_phrases(),
-            "duplicates": len(await asyncio.to_thread(possible_duplicates, db)),
+            "duplicates": None if (d := possible_duplicates(db, wait=False)) is None else len(d),
             "sync": {
                 "peer": db.get_pref("sync_peer"),
                 "this_device": this_device_address(),
@@ -1150,11 +1159,36 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
         await tg.log_out()
         return ok()
 
+    dialogs_cache: dict = {}
+
+    async def dialogs_cached(fresh: bool) -> list[dict]:
+        """Your Telegram groups. Getting them takes a while: the last list is shown at once and refreshed in the
+        background when it is older than 5 minutes."""
+        hit = dialogs_cache.get("v")
+
+        async def load() -> list[dict]:
+            out = await tg.list_dialogs()
+            dialogs_cache["v"] = (time.time(), out)
+            return out
+        if not hit or fresh:
+            return await load()
+        if time.time() - hit[0] > 300 and not dialogs_cache.get("loading"):
+            async def bg() -> None:
+                dialogs_cache["loading"] = True
+                try:
+                    await load()
+                except Exception as e:  # noqa: BLE001
+                    log.info("refreshing the groups list failed: %s", type(e).__name__)
+                finally:
+                    dialogs_cache["loading"] = False
+            asyncio.create_task(bg())
+        return hit[1]
+
     async def dialogs(request: Request):
         if not tg.authorized:
             raise ApiError(503, "טלגרם לא מחובר")
         selected = {c["id"]: c for c in db.chats()}
-        out = await tg.list_dialogs()
+        out = [dict(d) for d in await dialogs_cached(request.query_params.get("fresh") == "1")]
         for d in out:
             saved = selected.get(d["id"], {})
             d["enabled"] = bool(saved.get("enabled"))
@@ -1199,8 +1233,16 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             if tg.authorized:
                 await scanner.scan()
 
+    startup_finished = threading.Event()  # tests wait for it, so the start-up scan does not run in the middle
+
     async def startup_jobs() -> None:
         """Library upkeep runs AFTER the site is up, so a big library never keeps the site from opening."""
+        try:
+            await _startup_jobs()
+        finally:
+            startup_finished.set()
+
+    async def _startup_jobs() -> None:
         from .library import migrate_norms, repair
         scanner.status.update(running=True, chat="מסדר את הספרייה (פעם אחת אחרי עדכון)")
         try:
@@ -1338,4 +1380,5 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
     app.add_middleware(AuthMiddleware, settings=settings, valid_token=valid_token, valid_cast=valid_cast,
                        on_change=lambda: setattr(db, "wants_fresh", True))
     app.state.db, app.state.tg, app.state.scanner, app.state.settings = db, tg, scanner, settings
+    app.state.startup_finished = startup_finished
     return app

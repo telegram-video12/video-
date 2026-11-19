@@ -126,6 +126,7 @@ def test_scan_asked_while_busy_runs_again_after(client):
         assert sc._again is True
         await asyncio.sleep(0.05)  # ... and the waiting one runs once the lock is free
     client.post("/api/chats", json={"chats": [{"id": -100, "title": "קבוצת סדרות", "enabled": True}]})
+    wait_scans(client)
     sc.status["running"] = False
     asyncio.run(go())
 
@@ -232,3 +233,25 @@ def test_split_by_channel_and_names_cleared_on_new_tmdb(client):
     db.save_episode_info(tid, 1, [{"episode": 1, "name": "Old US name"}])
     db.update_title(tid, tmdb_id=32958)
     assert db.episode_info(tid) == {}
+
+
+def test_duplicates_are_worked_out_in_the_background(tmp_path):
+    import time as _t
+
+    from app.db import Database
+    from app.library import possible_duplicates
+
+    db = Database(tmp_path / "d.db")
+    for i, name in enumerate(("אבא גנוב", "אבא גנוב גוזלן")):
+        tid = db.get_or_create_title("movie", name, name, 1987)
+        db.add_media(chat_id=-1, msg_id=i, title_id=tid, season=None, episode=None, file_name="a.mp4", caption="",
+                     size=1, mime="video/mp4", duration=5400, width=1, height=1, added_at=1)
+    assert possible_duplicates(db, wait=False) is None  # Settings never waits: not known yet...
+    for _ in range(100):
+        if possible_duplicates(db, wait=False) is not None:
+            break
+        _t.sleep(0.02)
+    pairs = possible_duplicates(db, wait=False)  # ...worked out in the background
+    assert len(pairs) == 1
+    db.set_pref("dup_dismissed", f'["{pairs[0]["key"]}"]')  # you dismissed it: worked out again at once
+    assert possible_duplicates(db) == []
