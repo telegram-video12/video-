@@ -133,8 +133,8 @@ async function pageHome() {
     api('/api/library?kind=series&limit=20&nocont=1'),
     api('/api/library?kind=movie&limit=20&nocont=1'),
     api('/api/home').catch(() => ({new: [], genres: [], watchlist: []})),
-    api('/api/library?kind=movie&sort=release&limit=20&nocont=1').catch(() => ({titles: []})),
-    api('/api/library?kind=series&sort=release&limit=20&nocont=1').catch(() => ({titles: []})),
+    api('/api/library?kind=movie&sort=release&newfirst=1&limit=20&nocont=1').catch(() => ({titles: []})),
+    api('/api/library?kind=series&sort=release&newfirst=1&limit=20&nocont=1').catch(() => ({titles: []})),
   ]);
   libraryCache = all;
   if (!all.counts.all) { $app.innerHTML = head + emptyLibrary(); return; }

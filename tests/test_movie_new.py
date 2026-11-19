@@ -78,3 +78,36 @@ def test_badges_in_the_api(client):
     client.post("/api/settings", json={"new_days": {"movie": 5, "series": 7, "finale": 30}})
     lib = {t["kind"]: t for t in client.get("/api/library").json()["titles"]}
     assert lib["movie"]["site_new"] is None
+
+
+def test_new_rows_order_and_unreleased_sequels(client):
+    from test_api import login, scan
+
+    login(client)
+    scan(client)
+    db = client.app.state.db
+    now = time.time()
+    lib = client.get("/api/library").json()["titles"]
+    series = [t for t in lib if t["kind"] == "series"]
+    movie = next(t for t in lib if t["kind"] == "movie")
+    s = series[-1]  # not the first one: it must move to the front
+    eps = client.get(f"/api/titles/{s['id']}").json()["media"]
+    last = max(eps, key=lambda m: ((m["season"] or 1), m["episode"] or 0))
+    db.x("UPDATE titles SET year = 2020")
+    db.x("UPDATE titles SET avail_at = ?, last_ep_season = ?, last_ep_number = ? WHERE id = ?",
+         (now - 86400, last["season"] or 1, last["episode"], s["id"]))
+    db.x("UPDATE titles SET avail_at = ? WHERE id = ?", (now - 2 * 86400, movie["id"]))
+    row = client.get("/api/library?kind=series&sort=release&newfirst=1").json()["titles"]
+    assert row[0]["id"] == s["id"] and row[0]["site_new"] == "episode"
+    # "חדש בשבילך": also series you never started and new movies
+    new = [t["id"] for t in client.get("/api/home").json()["new"]]
+    assert new.index(s["id"]) < new.index(movie["id"])
+
+
+def test_unreleased_movie_is_not_a_sequel():
+    rows = [{"id": 1, "kind": "movie", "collection_id": 5, "year": 2010, "last_watched": 1, "watched_count": 1},
+            {"id": 2, "kind": "movie", "collection_id": 5, "year": 2099, "last_watched": None, "watched_count": 0},
+            {"id": 3, "kind": "movie", "collection_id": 5, "year": 2015, "last_watched": None, "watched_count": 0,
+             "avail_at": time.time() + 86400 * 30}]
+    mark_sequels(rows)
+    assert rows[1]["sequel"] == 0 and rows[2]["sequel"] == 0

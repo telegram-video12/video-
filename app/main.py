@@ -345,6 +345,11 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
             items = sorted(items, key=lambda t: t["rating"] or 0, reverse=True)
         if sort != "watched":  # titles with a real poster (TMDB) first, the ones without at the end, same order
             items = [t for t in items if t["poster"]] + [t for t in items if not t["poster"]]
+        if qp.get("newfirst") == "1":  # the "new" rows: what has a "פרק חדש" / "סרט חדש" badge comes first
+            days, now = new_days(), time.time()
+            new = sorted((t for t in items if site_new(t, days, now)), key=lambda t: t.get("avail_at") or 0, reverse=True)
+            ids = {t["id"] for t in new}
+            items = new + [t for t in items if t["id"] not in ids]
         counts = {"all": len(items), "series": sum(1 for t in items if t["kind"] == "series")}
         counts["movie"] = counts["all"] - counts["series"]
         if kind in ("series", "movie"):
@@ -408,9 +413,17 @@ def create_app(settings: Settings | None = None, tg: TelegramService | None = No
     async def home_rows(request: Request):
         """Home page extras: new episodes of what you watch, and rows of the genres you watch most."""
         items = db.library_titles()
-        # "✨ חדש בשבילך": new episodes of series you watch + the next movies of movie series you watched
-        fresh = sorted((t for t in items if t["new_count"] or t.get("sequel")),
-                       key=lambda t: t["new_at"] or t["last_added"] or 0, reverse=True)
+        # "✨ חדש בשבילך": new episodes of series you watch, the next movie of movie series you watched,
+        # then everything new by TMDB (a series' new episode, a new movie), newest first
+        days, now = new_days(), time.time()
+        mine = sorted((t for t in items if t["new_count"]), key=lambda t: t["new_at"] or 0, reverse=True)
+        seq = sorted((t for t in items if t.get("sequel")), key=lambda t: t["last_added"] or 0, reverse=True)
+        tm = sorted((t for t in items if site_new(t, days, now)), key=lambda t: t.get("avail_at") or 0, reverse=True)
+        fresh, seen_ids = [], set()
+        for t in mine + seq + [t for t in tm if t["kind"] == "series"] + [t for t in tm if t["kind"] == "movie"]:
+            if t["id"] not in seen_ids:
+                seen_ids.add(t["id"])
+                fresh.append(t)
         # your taste: genres of what you watched (recent watching counts a little more)
         score: dict[str, float] = {}
         watched = sorted((t for t in items if t["last_watched"]), key=lambda t: t["last_watched"], reverse=True)

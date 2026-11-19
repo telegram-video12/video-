@@ -112,10 +112,14 @@ def mark_sequels(rows: list[dict]) -> None:
         if t["kind"] == "movie" and t.get("collection_id") and t["last_watched"]:
             y = t["year"] or 0
             seen[t["collection_id"]] = min(seen.get(t["collection_id"], y), y)
+    now = time.time()
+    this_year = time.gmtime(now).tm_year
     for t in rows:
         c = t.get("collection_id")
+        # not out yet by TMDB (a trailer or a fake upload "of" a movie that comes out in 2028): no badge
+        unreleased = (t.get("avail_at") or 0) > now or (t["year"] or 0) > this_year
         t["sequel"] = int(bool(t["kind"] == "movie" and c and c in seen and not t["last_watched"]
-                               and not t["watched_count"] and (t["year"] or 9999) > seen[c]))
+                               and not t["watched_count"] and (t["year"] or 9999) > seen[c] and not unreleased))
 
 
 class Database:
