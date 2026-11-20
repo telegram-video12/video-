@@ -269,6 +269,7 @@ class TMDB:
             "cast": cast,
             **available(media_type, item),
             "made_in_il": made_in_israel(item),
+            "orig_lang": item.get("original_language"),
             # movie: the movie series it belongs to (Spider-Man 1, 2, 3...); 0 = none
             "collection_id": ((item.get("belongs_to_collection") or {}).get("id") or 0) if media_type == "movie" else None,
         }
@@ -314,6 +315,7 @@ class TMDB:
             last_year=meta.get("last_year"),
             collection_id=meta.get("collection_id"),
             made_in_il=meta.get("made_in_il"),
+            orig_lang=meta.get("orig_lang"),
             avail_at=meta.get("avail_at"),
             last_ep_season=meta.get("last_ep_season"),
             last_ep_number=meta.get("last_ep_number"),

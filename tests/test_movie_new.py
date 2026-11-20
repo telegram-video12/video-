@@ -170,3 +170,20 @@ def test_list_saved_for_the_next_start_and_own_changes_wait(tmp_path):
     db.wants_fresh = True
     db.x("UPDATE titles SET name = 'שלי'")  # your own change: waited for
     assert db.library_titles()[0]["name"] == "שלי"
+
+
+def test_anime_genre(tmp_path):
+    import json as _json
+    db = Database(tmp_path / "an.db")
+    db.always_fresh = True
+    a, _ = _movie(db, "וואן פיס", 1999, 0, 1)
+    b, _ = _movie(db, "שרק", 2001, 0, 2)
+    c, _ = _movie(db, "סרט סיני", 2019, 0, 3)
+    d, _ = _movie(db, "סדרה יפנית", 2020, 0, 4)
+    anim = _json.dumps(["אנימציה", "הרפתקאות"], ensure_ascii=False)
+    db.update_title(a, genres=anim, original_name="ワンピース")
+    db.update_title(b, genres=anim, original_name="Shrek")
+    db.update_title(c, genres=anim, original_name="哪吒之魔童降世")  # Chinese: not anime
+    db.update_title(d, genres=anim, original_name="Shingeki", orig_lang="ja")
+    g = {t["id"]: "אנימה" in t["genres"] for t in db.library_titles()}
+    assert g == {a: True, b: False, c: False, d: True}

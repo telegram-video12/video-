@@ -101,6 +101,8 @@ EP_KEY = ("(CASE WHEN t.kind = 'movie' THEN 'movie' WHEN m.episode IS NULL THEN 
           "ELSE m.season || ':' || m.episode END)")
 
 HEBREW = re.compile(r"[\u0590-\u05ff]")
+KANA = re.compile(r"[\u3040-\u30ff]")  # Japanese hiragana / katakana (not Chinese)
+ANIMATION = {"אנימציה", "Animation"}
 COMPLETE_RATIO = 0.92  # watched this much -> episode counts as finished
 MIN_STARTED = 10  # seconds; peeking at an episode for less than this does not count as watching it
 
@@ -179,7 +181,8 @@ class Database:
                          # episode, which one, and whether it ended a season). NULL = not asked yet, 0 = unknown
                          ("avail_at", "REAL"), ("last_ep_season", "INTEGER"), ("last_ep_number", "INTEGER"),
                          ("last_ep_finale", "INTEGER"),
-                         ("made_in_il", "INTEGER")):  # Israeli by TMDB (country / Hebrew); NULL = not asked yet  # movie: its TMDB movie series (0 = none, NULL = not known yet)  # 'il' Israeli / 'intl' from abroad / NULL unknown
+                         ("made_in_il", "INTEGER"),
+                         ("orig_lang", "TEXT")):  # TMDB's original language ("ja" = Japanese)  # Israeli by TMDB (country / Hebrew); NULL = not asked yet  # movie: its TMDB movie series (0 = none, NULL = not known yet)  # 'il' Israeli / 'intl' from abroad / NULL unknown
             if col not in tcols:  # TMDB details (genres, rating, length, cast)
                 self.conn.execute(f"ALTER TABLE titles ADD COLUMN {col} {typ}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS titles_name_key ON titles(kind, name_key)")
@@ -370,7 +373,7 @@ class Database:
                    "genres", "rating", "runtime", "cast_json", "original_name", "tmdb_details",
                    "intro_start", "intro_end", "last_year", "name_manual", "hidden_title", "origin", "collection_id",
                    "avail_at", "last_ep_season", "last_ep_number", "last_ep_finale",
-                   "made_in_il"}
+                   "made_in_il", "orig_lang"}
         fields = {k: v for k, v in fields.items() if k in allowed}
         if not fields:
             return
@@ -569,6 +572,11 @@ class Database:
                 t.get("origin") == "il" or HEBREW.search(t["original_name"] or ""))
             if il and "ישראלי" not in t["genres"]:
                 t["genres"].append("ישראלי")
+            # "אנימה": animation from Japan. TMDB has no such genre; its Japanese original name (with kana,
+            # e.g. ワンピース) or the original language says so.
+            if (ANIMATION & set(t["genres"]) and (t.get("orig_lang") == "ja" or KANA.search(t["original_name"] or ""))
+                    and "אנימה" not in t["genres"]):
+                t["genres"].append("אנימה")
         self._titles_cache = (version, soft, time.time(), rows)
         self._save_snapshot(rows)
 
@@ -606,7 +614,7 @@ class Database:
     def list_titles(self, q=None) -> list[dict]:
         return (q or self.q)(
             f"""
-            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.collection_id, t.avail_at, t.last_ep_finale, t.made_in_il, t.poster, t.backdrop, t.overview, t.genres, t.rating,
+            SELECT t.id, t.kind, t.name, t.year, t.last_year, t.origin, t.collection_id, t.avail_at, t.last_ep_finale, t.made_in_il, t.orig_lang, t.poster, t.backdrop, t.overview, t.genres, t.rating,
                    t.original_name,
                    COUNT(DISTINCT {EP_KEY}) AS media_count,
                    COUNT(DISTINCT m.season) AS season_count,
